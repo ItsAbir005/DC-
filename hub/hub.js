@@ -5,6 +5,7 @@ const { WebSocketServer } = require("ws");
 const jwt = require("jsonwebtoken");
 const selfsigned = require("selfsigned");
 const app = express();
+// Check for existing SSL certs, if not found generate self-signed certs
 if (!fs.existsSync("key.pem") || !fs.existsSync("cert.pem")) {
   console.log(" No SSL certs found. Generating self-signed certificate...");
   const attrs = [{ name: "commonName", value: "localhost" }];
