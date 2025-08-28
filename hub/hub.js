@@ -2,7 +2,8 @@ const fs = require("fs");
 const https = require("https");
 const express = require("express");
 const { WebSocketServer } = require("ws");
-const jwt = require("jsonwebtoken");
+const url = require("url");
+const { verifyToken } = require("./middleware/auth");
 const selfsigned = require("selfsigned");
 const app = express();
 // Check for existing SSL certs, if not found generate self-signed certs
@@ -26,26 +27,39 @@ const server = https.createServer(
 app.get("/", (req, res) => {
   res.send("Hub is running securely over HTTPS!");
 });
-//wss server 
+// In-memory store for connected users
+const connectedUsers = new Map();
 const wss = new WebSocketServer({ server });
+wss.on("connection", (ws, req) => {
+  const params = url.parse(req.url, true).query;
+  const token = params.token;
+  const payload = verifyToken(token);
+  if (!payload || !payload.nickname) {
+    ws.send(" Invalid or missing token. Closing connection.");
+    ws.close();
+    return;
+  }
 
-wss.on("connection", (ws) => {
-  console.log(" Client connected");
+  const nickname = payload.nickname;
+  console.log(`${nickname} connected`);
+  connectedUsers.set(nickname, ws);
+
+  ws.send(`Welcome ${nickname}! Connected securely over WSS.`);
 
   ws.on("message", (msg) => {
-    console.log(" Received:", msg.toString());
-
-    try {
-      const decoded = jwt.verify(msg.toString(), "secret123");
-      ws.send("Token valid: " + JSON.stringify(decoded));
-    } catch {
-      ws.send(" Invalid token");
+    console.log(`[${nickname}] says: ${msg}`);
+    for (let [user, clientWs] of connectedUsers) {
+      if (clientWs.readyState === ws.OPEN) {
+        clientWs.send(`${nickname}: ${msg}`);
+      }
     }
   });
 
-  ws.send("Welcome to Secure WSS!");
+  ws.on("close", () => {
+    console.log(` ${nickname} disconnected`);
+    connectedUsers.delete(nickname);
+  });
 });
-const port = 3000;
-app.listen(port, () => {
-  console.log(`Hub server running at http://localhost:${port}`);
+server.listen(3000, () => {
+  console.log("Hub server running at https://localhost:3000");
 });
