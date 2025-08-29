@@ -4,6 +4,9 @@ const express = require("express");
 const { WebSocketServer } = require("ws");
 const url = require("url");
 const { verifyToken } = require("./middleware/auth");
+const { broadcast } = require("./middleware/broadcast");
+const { handlePrivateMessage } = require("./middleware/privateMessage");
+const { handleModeration } = require("./middleware/moderation");
 const selfsigned = require("selfsigned");
 const app = express();
 // Check for existing SSL certs, if not found generate self-signed certs
@@ -45,16 +48,13 @@ wss.on("connection", (ws, req) => {
   connectedUsers.set(nickname, ws);
 
   ws.send(`Welcome ${nickname}! Connected securely over WSS.`);
-
-  ws.on("message", (msg) => {
+  ws.on("message", (msgBuffer) => {
+    const msg = msgBuffer.toString().trim();
     console.log(`[${nickname}] says: ${msg}`);
-    for (let [user, clientWs] of connectedUsers) {
-      if (clientWs.readyState === ws.OPEN) {
-        clientWs.send(`${nickname}: ${msg}`);
-      }
-    }
+    if (handlePrivateMessage(connectedUsers, nickname, ws, msg)) return;
+    if (handleModeration(connectedUsers, nickname, ws, msg)) return;
+    broadcast(connectedUsers, `${nickname}: ${msg}`);
   });
-
   ws.on("close", () => {
     console.log(` ${nickname} disconnected`);
     connectedUsers.delete(nickname);
