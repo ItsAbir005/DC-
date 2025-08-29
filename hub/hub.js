@@ -51,6 +51,7 @@ wss.on("connection", (ws, req) => {
   ws.on("message", (msgBuffer) => {
     const msg = msgBuffer.toString().trim();
     console.log(`[${nickname}] says: ${msg}`);
+    // Handle private messages and moderation commands
     if (handlePrivateMessage(connectedUsers, nickname, ws, msg)) return;
     if (handleModeration(connectedUsers, nickname, ws, msg)) return;
     broadcast(connectedUsers, `${nickname}: ${msg}`);
