@@ -20,7 +20,7 @@ rl.question("Enter your nickname: ", (nickname) => {
   rl.question("Enter folder path to share: ", (folderPath) => {
     let index;
     try {
-      index = generateSharedIndex(folderPath); 
+      index = generateSharedIndex(folderPath);
     } catch (err) {
       console.error(" Error:", err.message);
       process.exit(1);
@@ -49,6 +49,38 @@ rl.question("Enter your nickname: ", (nickname) => {
           rl.prompt();
           return;
         }
+        if (msg === "!myfiles") {
+          console.log("\n Your Files:");
+          index.forEach((file, i) => {
+            console.log(`${i + 1}. ${file.name} | hash: ${file.hash}`);
+          });
+          rl.prompt();
+          return;
+        }
+        if (msg === "!users") {
+          ws.send(JSON.stringify({ type: "getUsers", from: nickname }));
+          rl.prompt();
+          return;
+        }
+        if (msg.startsWith("!share ")) {
+          const parts = msg.split(" ");
+          if (parts.length < 3) {
+            console.log("Usage: !share <fileHash> <userID1> <userID2> ...");
+            rl.prompt();
+            return;
+          }
+          ws.send(
+            JSON.stringify({
+              type: "shareFile",
+              from: nickname,
+              fileHash,
+              userIDs,
+            })
+          );
+          console.log(` Request sent to share file ${fileHash} with users: ${userIDs.join(", ")}`);
+          rl.prompt();
+          return;
+        }
         ws.send(JSON.stringify({ type: "message", from: nickname, text: msg }));
         rl.prompt();
       });
@@ -57,12 +89,23 @@ rl.question("Enter your nickname: ", (nickname) => {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        console.log(`\n${msg.from || "Server"}: ${msg.text}`);
+
+        if (msg.type === "userList") {
+          console.log("\nConnected Users:");
+          msg.users.forEach((u) => {
+            console.log(`ID: ${u.id} | Nick: ${u.nickname}`);
+          });
+        } else if (msg.type === "shareAck") {
+          console.log(`\n Server acknowledged sharing file ${msg.fileHash} with ${msg.userIDs.join(", ")}`);
+        } else {
+          console.log(`\n${msg.from || "Server"}: ${msg.text}`);
+        }
       } catch (err) {
         console.log("Raw message:", data.toString());
       }
       rl.prompt();
     });
+
 
     ws.on("close", () => {
       console.log("\nDisconnected from server");
