@@ -17,14 +17,20 @@ rl.question("Enter your nickname: ", (nickname) => {
   console.log("Nickname entered:", `"${nickname}"`);
 
   // Ask for folder path
-  rl.question("Enter folder path to share: ", (folderPath) => {
-    let index;
+  rl.question("Enter folder path to share (press Enter to skip): ", (folderPath) => {
+  let index = [];
+
+  if (folderPath.trim()) {
     try {
       index = generateSharedIndex(folderPath);
     } catch (err) {
       console.error(" Error:", err.message);
       process.exit(1);
     }
+  } else {
+    console.log(" No folder shared. Continuing without files...");
+  }
+
 
     // Connect WebSocket
     const secretKey = "secret123";

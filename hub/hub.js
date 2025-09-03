@@ -38,6 +38,7 @@ app.get("/", (req, res) => {
 
 // In-memory store for connected users
 const connectedUsers = new Map();
+const sharedFiles = new Map();
 
 const wss = new WebSocketServer({ server });
 
@@ -55,11 +56,7 @@ wss.on("connection", (ws, req) => {
   const nickname = payload.nickname;
   console.log(` ${nickname} connected`);
   connectedUsers.set(nickname, ws);
-
-  // Send welcome message
   ws.send(JSON.stringify({ type: "system", text: `Welcome ${nickname}! Connected securely over WSS.` }));
-
-  // Broadcast join message
   broadcast(connectedUsers, JSON.stringify({ type: "system", text: `${nickname} joined the chat.` }), ws);
 
   ws.on("message", (msgBuffer) => {
@@ -70,8 +67,33 @@ wss.on("connection", (ws, req) => {
       console.log(`[${nickname}] sent invalid JSON`);
       return;
     }
+    if (parsed.type === "shareRequest") {
+      const { fileHash, userIDs } = parsed;
+      sharedFiles.set(fileHash, {
+        fileName: parsed.fileName || "unknown",
+        size: parsed.size || 0,
+        ownerID: nickname,
+        allowedUserIDs: new Set(userIDs),
+      });
 
-    console.log(`[${nickname}] says: ${parsed.text}`);
+      console.log(`${nickname} shared file ${fileHash} with users: ${userIDs.join(", ")}`);
+      ws.send(JSON.stringify({
+        type: "shareAck",
+        fileHash,
+        userIDs,
+      }));
+
+      return;
+    }
+    if (parsed.type === "getUsers") {
+      const users = [...connectedUsers.keys()].map((nick, i) => ({
+        id: `u${i + 1}`, 
+        nickname: nick,
+      }));
+
+      ws.send(JSON.stringify({ type: "userList", users }));
+      return;
+    }
 
     // Private messages
     if (handlePrivateMessage(connectedUsers, nickname, ws, parsed)) return;
@@ -79,13 +101,15 @@ wss.on("connection", (ws, req) => {
     // Moderation commands
     if (handleModeration(connectedUsers, nickname, ws, parsed)) return;
 
-    // Public broadcast
-    const outgoing = JSON.stringify({
-      type: "message",
-      from: nickname,
-      text: parsed.text,
-    });
-    broadcast(connectedUsers, outgoing);
+    // Public broadcast (chat)
+    if (parsed.type === "chat" || parsed.text) {
+      const outgoing = JSON.stringify({
+        type: "message",
+        from: nickname,
+        text: parsed.text,
+      });
+      broadcast(connectedUsers, outgoing);
+    }
   });
 
   ws.on("close", () => {
