@@ -10,7 +10,7 @@ const { handleModeration } = require("./middleware/moderation");
 const selfsigned = require("selfsigned");
 
 const app = express();
-
+const userFileIndexes = new Map();
 // Generate SSL certs if missing
 if (!fs.existsSync("key.pem") || !fs.existsSync("cert.pem")) {
   console.log("No SSL certs found. Generating self-signed certificate...");
@@ -87,14 +87,63 @@ wss.on("connection", (ws, req) => {
     }
     if (parsed.type === "getUsers") {
       const users = [...connectedUsers.keys()].map((nick, i) => ({
-        id: `u${i + 1}`, 
+        id: `u${i + 1}`,
         nickname: nick,
       }));
 
       ws.send(JSON.stringify({ type: "userList", users }));
       return;
     }
+    // Handle fileIndex from client
+    if (parsed.type === "fileIndex") {
+      if (Array.isArray(parsed.files)) {
+        userFileIndexes.set(nickname, parsed.files);
+        console.log(`${nickname} shared ${parsed.files.length} files in index`);
+      }
+      return;
+    }
 
+    // Handle listRequest from client
+    if (parsed.type === "listRequest") {
+      const targetNick = parsed.target;
+      const targetFiles = userFileIndexes.get(targetNick);
+
+      if (!targetFiles || targetFiles.length === 0) {
+        ws.send(JSON.stringify({
+          type: "system",
+          text: `${targetNick} has not shared any files.`,
+        }));
+        return;
+      }
+
+      // Filter only files the requester is allowed to see
+      const visibleFiles = targetFiles.filter(f => {
+        const sharedMeta = sharedFiles.get(f.hash);
+        if (!sharedMeta) return false;
+        return (
+          sharedMeta.ownerID === targetNick &&
+          (sharedMeta.allowedUserIDs.has(nickname) || targetNick === nickname)
+        );
+      });
+
+      if (visibleFiles.length === 0) {
+        ws.send(JSON.stringify({
+          type: "system",
+          text: `You don't have access to ${targetNick}'s files.`,
+        }));
+        return;
+      }
+
+      const fileList = visibleFiles
+        .map((f, i) => `${i + 1}. ${f.fileName} | hash: ${f.hash}`)
+        .join("\n");
+
+      ws.send(JSON.stringify({
+        type: "system",
+        text: `\nFiles shared by ${targetNick}:\n${fileList}`,
+      }));
+      return;
+    }
     // Private messages
     if (handlePrivateMessage(connectedUsers, nickname, ws, parsed)) return;
 
