@@ -18,18 +18,18 @@ rl.question("Enter your nickname: ", (nickname) => {
 
   // Ask for folder path
   rl.question("Enter folder path to share (press Enter to skip): ", (folderPath) => {
-  let index = [];
+    let index = [];
 
-  if (folderPath.trim()) {
-    try {
-      index = generateSharedIndex(folderPath);
-    } catch (err) {
-      console.error(" Error:", err.message);
-      process.exit(1);
+    if (folderPath.trim()) {
+      try {
+        index = generateSharedIndex(folderPath);
+      } catch (err) {
+        console.error(" Error:", err.message);
+        process.exit(1);
+      }
+    } else {
+      console.log(" No folder shared. Continuing without files...");
     }
-  } else {
-    console.log(" No folder shared. Continuing without files...");
-  }
 
 
     // Connect WebSocket
@@ -57,11 +57,15 @@ rl.question("Enter your nickname: ", (nickname) => {
         }
         if (msg === "!myfiles") {
           console.log("\n Your Files:");
-          index.forEach((file, i) => {
-            console.log(`${i + 1}. ${file.name} | hash: ${file.hash}`);
-          });
+          if (index.length === 0) {
+            console.log(" (No files shared)");
+          } else {
+            index.forEach((file, i) => {
+              console.log(`${i + 1}. ${file.fileName} | hash: ${file.hash}`);
+            });
+          }
           rl.prompt();
-          return;
+          return; // <-- prevents sending to server
         }
         if (msg === "!users") {
           ws.send(JSON.stringify({ type: "getUsers", from: nickname }));
@@ -75,15 +79,37 @@ rl.question("Enter your nickname: ", (nickname) => {
             rl.prompt();
             return;
           }
+
+          const fileHash = parts[1];
+          const userIDs = parts.slice(2);
+
           ws.send(
             JSON.stringify({
-              type: "shareFile",
+              type: "shareRequest",
               from: nickname,
               fileHash,
               userIDs,
             })
           );
+
           console.log(` Request sent to share file ${fileHash} with users: ${userIDs.join(", ")}`);
+          rl.prompt();
+          return;
+        }
+        if (msg.startsWith("!list ")) {
+          const parts = msg.split(" ");
+          if (parts.length < 2) {
+            console.log("Usage: !list <nickname>");
+            rl.prompt();
+            return;
+          }
+
+          const targetNick = parts[1];
+          ws.send(JSON.stringify({
+            type: "listRequest",
+            from: nickname,
+            target: targetNick,
+          }));
           rl.prompt();
           return;
         }
