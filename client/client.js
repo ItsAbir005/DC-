@@ -65,7 +65,7 @@ rl.question("Enter your nickname: ", (nickname) => {
             });
           }
           rl.prompt();
-          return; // <-- prevents sending to server
+          return;
         }
         if (msg === "!users") {
           ws.send(JSON.stringify({ type: "getUsers", from: nickname }));
@@ -121,17 +121,29 @@ rl.question("Enter your nickname: ", (nickname) => {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString());
-
         if (msg.type === "userList") {
           console.log("\nConnected Users:");
           msg.users.forEach((u) => {
             console.log(`ID: ${u.id} | Nick: ${u.nickname}`);
           });
+
         } else if (msg.type === "shareAck") {
           console.log(`\n Server acknowledged sharing file ${msg.fileHash} with ${msg.userIDs.join(", ")}`);
+
+        } else if (msg.type === "fileList") {
+          console.log(`\n Files shared by ${msg.owner}:`);
+          if (!msg.files || msg.files.length === 0) {
+            console.log(" (No files shared with you)");
+          } else {
+            msg.files.forEach((file, i) => {
+              console.log(`${i + 1}. ${file.fileName} | size: ${file.size} bytes | hash: ${file.hash}`);
+            });
+          }
+
         } else {
           console.log(`\n${msg.from || "Server"}: ${msg.text}`);
         }
+
       } catch (err) {
         console.log("Raw message:", data.toString());
       }
