@@ -133,15 +133,16 @@ wss.on("connection", (ws, req) => {
         }));
         return;
       }
-
-      const fileList = visibleFiles
-        .map((f, i) => `${i + 1}. ${f.fileName} | hash: ${f.hash}`)
-        .join("\n");
-
       ws.send(JSON.stringify({
-        type: "system",
-        text: `\nFiles shared by ${targetNick}:\n${fileList}`,
+        type: "fileList",
+        owner: targetNick,
+        files: visibleFiles.map(f => ({
+          fileName: f.fileName,
+          size: f.size || 0,
+          hash: f.hash,
+        })),
       }));
+
       return;
     }
     // Private messages
