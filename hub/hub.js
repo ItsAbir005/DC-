@@ -11,6 +11,7 @@ const selfsigned = require("selfsigned");
 
 const app = express();
 const userFileIndexes = new Map();
+const userPublicKeys = new Map();
 // Generate SSL certs if missing
 if (!fs.existsSync("key.pem") || !fs.existsSync("cert.pem")) {
   console.log("No SSL certs found. Generating self-signed certificate...");
@@ -65,6 +66,18 @@ wss.on("connection", (ws, req) => {
       parsed = JSON.parse(msgBuffer.toString());
     } catch {
       console.log(`[${nickname}] sent invalid JSON`);
+      return;
+    }
+    if (parsed.type === "registerKey") {
+      const { from, publicKey } = parsed;
+      userPublicKeys.set(from, publicKey);
+
+      console.log(`Stored public key for ${from}`);
+
+      ws.send(JSON.stringify({
+        type: "keyAck",
+        text: `Public key registered for ${from}`
+      }));
       return;
     }
     if (parsed.type === "shareRequest") {
