@@ -1,12 +1,36 @@
 const readline = require("readline");
 const jwt = require("jsonwebtoken");
 const WebSocket = require("ws");
+const fs = require("fs");
+const crypto = require("crypto");
+const path = require("path");
 const { generateSharedIndex } = require("./controllers/shareController");
 
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
+// Ensure RSA key pair exists
+function ensureKeyPair() {
+  const privateKeyPath = path.join(__dirname, ".private-key.pem");
+  const publicKeyPath = path.join(__dirname, ".public-key.pem");
+  if (fs.existsSync(privateKeyPath) && fs.existsSync(publicKeyPath)) {
+    const privateKey = fs.readFileSync(privateKeyPath, "utf8");
+    const publicKey = fs.readFileSync(publicKeyPath, "utf8");
+    return { privateKey, publicKey };
+  }
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+
+  fs.writeFileSync(privateKeyPath, privateKey, { mode: 0o600 });
+  fs.writeFileSync(publicKeyPath, publicKey);
+
+  return { privateKey, publicKey };
+}
+
 
 rl.question("Enter your nickname: ", (nickname) => {
   nickname = nickname.trim();
@@ -42,7 +66,12 @@ rl.question("Enter your nickname: ", (nickname) => {
 
     ws.on("open", () => {
       console.log("Connected to server as", nickname);
-
+      const { publicKey } = ensureKeyPair();
+      ws.send(JSON.stringify({
+        type: "registerKey",
+        from: nickname,
+        publicKey
+      }));
       // Optionally: send file index to server
       ws.send(JSON.stringify({ type: "fileIndex", from: nickname, files: index }));
 
