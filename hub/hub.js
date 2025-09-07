@@ -68,18 +68,6 @@ wss.on("connection", (ws, req) => {
       console.log(`[${nickname}] sent invalid JSON`);
       return;
     }
-    if (parsed.type === "registerKey") {
-      const { from, publicKey } = parsed;
-      userPublicKeys.set(from, publicKey);
-
-      console.log(`Stored public key for ${from}`);
-
-      ws.send(JSON.stringify({
-        type: "keyAck",
-        text: `Public key registered for ${from}`
-      }));
-      return;
-    }
     if (parsed.type === "shareRequest") {
       const { fileHash, userIDs } = parsed;
       sharedFiles.set(fileHash, {
@@ -115,7 +103,44 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
+    if (parsed.type === "shareEncryptedFile") {
+      sharedFiles.set(parsed.fileHash, {
+        fileName: parsed.fileName,
+        size: parsed.size,
+        ownerID: nickname,
+        recipients: parsed.recipients,
+        encryptedKeys: parsed.encryptedKeys,
+        iv: parsed.iv,
+        allowedUserIDs: new Set(parsed.recipients)
+      });
+      for (const recipient of parsed.recipients) {
+        const targetWS = connectedUsers.get(recipient);
+        if (targetWS) {
+          targetWS.send(JSON.stringify({
+            type: "fileShared",
+            from: nickname,
+            fileHash: parsed.fileHash,
+            fileName: parsed.fileName,
+            size: parsed.size,
+          }));
+        }
+      }
+      console.log(`${nickname} shared encrypted file ${parsed.fileHash}`);
+      ws.send(JSON.stringify({ type: "shareAck", fileHash: parsed.fileHash }));
+      return;
+    }
+    if (parsed.type === "registerKey") {
+      const { from, publicKey } = parsed;
+      userPublicKeys.set(from, publicKey);
 
+      console.log(`Stored public key for ${from}`);
+
+      ws.send(JSON.stringify({
+        type: "keyAck",
+        text: `Public key registered for ${from}`
+      }));
+      return;
+    }
     // Handle listRequest from client
     if (parsed.type === "listRequest") {
       const targetNick = parsed.target;
@@ -128,7 +153,15 @@ wss.on("connection", (ws, req) => {
         }));
         return;
       }
-
+      if (parsed.type === "getPublicKey") {
+        const pubKey = userPublicKeys.get(parsed.target);
+        if (!pubKey) {
+          ws.send(JSON.stringify({ type: "system", text: `No public key found for ${parsed.target}` }));
+          return;
+        }
+        ws.send(JSON.stringify({ type: "publicKey", user: parsed.target, key: pubKey }));
+        return;
+      }
       // Filter only files the requester is allowed to see
       const visibleFiles = targetFiles.filter(f => {
         const sharedMeta = sharedFiles.get(f.hash);
