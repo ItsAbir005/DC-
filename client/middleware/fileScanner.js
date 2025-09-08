@@ -2,27 +2,30 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-function walkDirectory(dir, basePath, fileList = []) {
-  const files = fs.readdirSync(dir);
+function walkDirectory(baseDir, dir) {
+  const results = [];
+  const list = fs.readdirSync(dir);
 
-  for (const file of files) {
+  list.forEach((file) => {
     const filePath = path.join(dir, file);
     const stat = fs.statSync(filePath);
 
-    if (stat.isDirectory()) {
-      walkDirectory(filePath, basePath, fileList);
+    if (stat && stat.isDirectory()) {
+      results.push(...walkDirectory(baseDir, filePath));
     } else {
-      const fileBuffer = fs.readFileSync(filePath);
-      const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+      const buffer = fs.readFileSync(filePath);
+      const hash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-      fileList.push({
-        fileName: path.relative(basePath, filePath),
+      results.push({
+        fileName: path.relative(baseDir, filePath),
+        filePath,                                
         size: stat.size,
-        hash: hash,
+        hash,
       });
     }
-  }
-  return fileList;
+  });
+
+  return results;
 }
 
 module.exports = { walkDirectory };
