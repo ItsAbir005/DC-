@@ -90,6 +90,7 @@ wss.on("connection", (ws, req) => {
       const users = [...connectedUsers.keys()].map((nick, i) => ({
         id: `u${i + 1}`,
         nickname: nick,
+        publicKey: userPublicKeys.get(nick) || null
       }));
 
       ws.send(JSON.stringify({ type: "userList", users }));
@@ -103,6 +104,7 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
+
     if (parsed.type === "shareEncryptedFile") {
       sharedFiles.set(parsed.fileHash, {
         fileName: parsed.fileName,
@@ -113,6 +115,7 @@ wss.on("connection", (ws, req) => {
         iv: parsed.iv,
         allowedUserIDs: new Set(parsed.recipients)
       });
+
       for (const recipient of parsed.recipients) {
         const targetWS = connectedUsers.get(recipient);
         if (targetWS) {
@@ -129,6 +132,26 @@ wss.on("connection", (ws, req) => {
       ws.send(JSON.stringify({ type: "shareAck", fileHash: parsed.fileHash }));
       return;
     }
+    // Handle single public-key request from a client (so client can encrypt AES key)
+    if (parsed.type === "requestKey") {
+      const target = parsed.target || parsed.nickname;
+      const pubKey = userPublicKeys.get(target);
+
+      if (!pubKey) {
+        ws.send(JSON.stringify({ type: "system", text: `No public key found for ${target}` }));
+        return;
+      }
+
+      // Reply with a message type the client already handles: "userKey"
+      ws.send(JSON.stringify({
+        type: "userKey",
+        nickname: target,
+        publicKey: pubKey
+      }));
+      return;
+    }
+
+    // Handle registerKey from client
     if (parsed.type === "registerKey") {
       const { from, publicKey } = parsed;
       userPublicKeys.set(from, publicKey);

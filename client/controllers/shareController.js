@@ -10,7 +10,7 @@ function generateSharedIndex(folderPath) {
   const index = walkDirectory(folderPath, folderPath);
 
   fs.writeFileSync("shared_index.json", JSON.stringify(index, null, 2));
-  console.log(" Shared index created! Saved as shared_index.json");
+  console.log(" Shared index created -> shared_index.json");
 
   return index;
 }
