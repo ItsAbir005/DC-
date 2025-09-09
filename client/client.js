@@ -9,6 +9,7 @@ const { generateSharedIndex } = require("./controllers/shareController");
 const { ensureKeyPair } = require("./controllers/keyController");
 const { registerUserKey, getUserKey } = require("./controllers/userController");
 const { generateAESKey, encryptAESKeyForRecipient } = require("./utils/cryptoUtils");
+const { decryptAESKey, decryptFile } = require("./controllers/decryptController");
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -53,7 +54,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       rl.setPrompt("> ");
       rl.prompt();
     });
-    ws.on("message", (data) => {
+    ws.on("message", async (data) => {
       let msg;
       try {
         msg = JSON.parse(data.toString());
@@ -98,9 +99,17 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           break;
 
         case "fileKey":
-          console.log(`\n Received encrypted key for file ${msg.fileHash}`);
-          console.log(`Encrypted Key (base64): ${msg.encryptedKey}`);
-          console.log(`IV: ${msg.iv}`);
+          try {
+            console.log(`\n Received encrypted key for file ${msg.fileHash}`);
+            const aesKey = decryptAESKey(msg.encryptedKey, "./keys/private.pem");
+            const encryptedFilePath = path.join("./downloads", `${msg.fileHash}.enc`);
+            const outputFilePath = path.join("./downloads", `${msg.fileHash}_decrypted`);
+            await decryptFile(encryptedFilePath, outputFilePath, aesKey, msg.iv);
+
+            console.log(` Decryption complete! File saved at: ${outputFilePath}`);
+          } catch (err) {
+            console.error(" Error decrypting file:", err.message);
+          }
           break;
 
         case "fileList":
