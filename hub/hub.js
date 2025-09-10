@@ -12,6 +12,7 @@ const selfsigned = require("selfsigned");
 const app = express();
 const userFileIndexes = new Map();
 const userPublicKeys = new Map();
+
 // Generate SSL certs if missing
 if (!fs.existsSync("key.pem") || !fs.existsSync("cert.pem")) {
   console.log("No SSL certs found. Generating self-signed certificate...");
@@ -37,7 +38,7 @@ app.get("/", (req, res) => {
   res.send("Hub is running securely over HTTPS!");
 });
 
-// In-memory store for connected users
+// In-memory store
 const connectedUsers = new Map();
 const sharedFiles = new Map();
 
@@ -55,8 +56,9 @@ wss.on("connection", (ws, req) => {
   }
 
   const nickname = payload.nickname;
-  console.log(` ${nickname} connected`);
+  console.log(`${nickname} connected`);
   connectedUsers.set(nickname, ws);
+
   ws.send(JSON.stringify({ type: "system", text: `Welcome ${nickname}! Connected securely over WSS.` }));
   broadcast(connectedUsers, JSON.stringify({ type: "system", text: `${nickname} joined the chat.` }), ws);
 
@@ -78,42 +80,23 @@ wss.on("connection", (ws, req) => {
       });
 
       console.log(`${nickname} shared file ${fileHash} with users: ${userIDs.join(", ")}`);
-      ws.send(JSON.stringify({
-        type: "shareAck",
-        fileHash,
-        userIDs,
-      }));
-
-      return;
-    }
-    if (parsed.type === "getUsers") {
-      const users = [...connectedUsers.keys()].map((nick, i) => ({
-        id: `u${i + 1}`,
-        nickname: nick,
-        publicKey: userPublicKeys.get(nick) || null
-      }));
-
-      ws.send(JSON.stringify({ type: "userList", users }));
-      return;
-    }
-    // Handle fileIndex from client
-    if (parsed.type === "fileIndex") {
-      if (Array.isArray(parsed.files)) {
-        userFileIndexes.set(nickname, parsed.files);
-        console.log(`${nickname} shared ${parsed.files.length} files in index`);
-      }
+      ws.send(JSON.stringify({ type: "shareAck", fileHash, userIDs }));
       return;
     }
 
     if (parsed.type === "shareEncryptedFile") {
+      const normalizedKeys = {};
+      for (const [user, key] of Object.entries(parsed.encryptedKeys)) {
+        normalizedKeys[user] = Buffer.isBuffer(key) ? key.toString("base64") : key;
+      }
       sharedFiles.set(parsed.fileHash, {
         fileName: parsed.fileName,
         size: parsed.size,
         ownerID: nickname,
         recipients: parsed.recipients,
-        encryptedKeys: parsed.encryptedKeys,
-        iv: parsed.iv,
-        allowedUserIDs: new Set(parsed.recipients)
+        encryptedKeys: normalizedKeys,
+        iv: Buffer.isBuffer(parsed.iv) ? parsed.iv.toString("base64") : parsed.iv,
+        allowedUserIDs: new Set(parsed.recipients),
       });
 
       for (const recipient of parsed.recipients) {
@@ -132,7 +115,39 @@ wss.on("connection", (ws, req) => {
       ws.send(JSON.stringify({ type: "shareAck", fileHash: parsed.fileHash }));
       return;
     }
-    // Handle single public-key request from a client (so client can encrypt AES key)
+    if (parsed.type === "getFileKey") {
+      const fileMeta = sharedFiles.get(parsed.fileHash);
+      if (!fileMeta || !fileMeta.allowedUserIDs.has(nickname)) {
+        ws.send(JSON.stringify({ type: "system", text: "Access denied" }));
+        return;
+      }
+      try {
+        const encKey = fileMeta.encryptedKeys[nickname];
+        const iv = fileMeta.iv;
+        ws.send(JSON.stringify({
+          type: "fileKey",
+          fileHash: parsed.fileHash,
+          encryptedKey: Buffer.isBuffer(encKey) ? encKey.toString("base64") : encKey,
+          iv: Buffer.isBuffer(iv) ? iv.toString("base64") : iv,
+        }));
+      } catch (err) {
+        console.error("Failed to send to client:", err);
+      }
+
+      return;
+    }
+
+    //User and key management
+    if (parsed.type === "getUsers") {
+      const users = [...connectedUsers.keys()].map((nick, i) => ({
+        id: `u${i + 1}`,
+        nickname: nick,
+        publicKey: userPublicKeys.get(nick) || null
+      }));
+      ws.send(JSON.stringify({ type: "userList", users }));
+      return;
+    }
+
     if (parsed.type === "requestKey") {
       const target = parsed.target || parsed.nickname;
       const pubKey = userPublicKeys.get(target);
@@ -142,50 +157,45 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      // Reply with a message type the client already handles: "userKey"
-      ws.send(JSON.stringify({
-        type: "userKey",
-        nickname: target,
-        publicKey: pubKey
-      }));
+      ws.send(JSON.stringify({ type: "userKey", nickname: target, publicKey: pubKey }));
       return;
     }
 
-    // Handle registerKey from client
+    if (parsed.type === "getPublicKey") {
+      const pubKey = userPublicKeys.get(parsed.target);
+      if (!pubKey) {
+        ws.send(JSON.stringify({ type: "system", text: `No public key found for ${parsed.target}` }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "publicKey", user: parsed.target, key: pubKey }));
+      return;
+    }
     if (parsed.type === "registerKey") {
       const { from, publicKey } = parsed;
       userPublicKeys.set(from, publicKey);
-
       console.log(`Stored public key for ${from}`);
-
-      ws.send(JSON.stringify({
-        type: "keyAck",
-        text: `Public key registered for ${from}`
-      }));
+      ws.send(JSON.stringify({ type: "keyAck", text: `Public key registered for ${from}` }));
       return;
     }
-    // Handle listRequest from client
+
+    //File listing
+    if (parsed.type === "fileIndex") {
+      if (Array.isArray(parsed.files)) {
+        userFileIndexes.set(nickname, parsed.files);
+        console.log(`${nickname} shared ${parsed.files.length} files in index`);
+      }
+      return;
+    }
+
     if (parsed.type === "listRequest") {
       const targetNick = parsed.target;
       const targetFiles = userFileIndexes.get(targetNick);
 
       if (!targetFiles || targetFiles.length === 0) {
-        ws.send(JSON.stringify({
-          type: "system",
-          text: `${targetNick} has not shared any files.`,
-        }));
+        ws.send(JSON.stringify({ type: "system", text: `${targetNick} has not shared any files.` }));
         return;
       }
-      if (parsed.type === "getPublicKey") {
-        const pubKey = userPublicKeys.get(parsed.target);
-        if (!pubKey) {
-          ws.send(JSON.stringify({ type: "system", text: `No public key found for ${parsed.target}` }));
-          return;
-        }
-        ws.send(JSON.stringify({ type: "publicKey", user: parsed.target, key: pubKey }));
-        return;
-      }
-      // Filter only files the requester is allowed to see
+
       const visibleFiles = targetFiles.filter(f => {
         const sharedMeta = sharedFiles.get(f.hash);
         if (!sharedMeta) return false;
@@ -196,12 +206,10 @@ wss.on("connection", (ws, req) => {
       });
 
       if (visibleFiles.length === 0) {
-        ws.send(JSON.stringify({
-          type: "system",
-          text: `You don't have access to ${targetNick}'s files.`,
-        }));
+        ws.send(JSON.stringify({ type: "system", text: `You don't have access to ${targetNick}'s files.` }));
         return;
       }
+
       ws.send(JSON.stringify({
         type: "fileList",
         owner: targetNick,
@@ -211,22 +219,18 @@ wss.on("connection", (ws, req) => {
           hash: f.hash,
         })),
       }));
-
       return;
     }
-    // Private messages
+
+    //Private messages
     if (handlePrivateMessage(connectedUsers, nickname, ws, parsed)) return;
 
-    // Moderation commands
+    //Moderation
     if (handleModeration(connectedUsers, nickname, ws, parsed)) return;
 
-    // Public broadcast (chat)
+    //Public chat
     if (parsed.type === "chat" || parsed.text) {
-      const outgoing = JSON.stringify({
-        type: "message",
-        from: nickname,
-        text: parsed.text,
-      });
+      const outgoing = JSON.stringify({ type: "message", from: nickname, text: parsed.text });
       broadcast(connectedUsers, outgoing);
     }
   });
@@ -234,13 +238,10 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {
     console.log(`${nickname} disconnected`);
     connectedUsers.delete(nickname);
-    broadcast(
-      connectedUsers,
-      JSON.stringify({ type: "system", text: `${nickname} left the chat.` })
-    );
+    broadcast(connectedUsers, JSON.stringify({ type: "system", text: `${nickname} left the chat.` }));
   });
 });
 
 server.listen(3000, () => {
-  console.log(" Hub server running at https://localhost:3000");
+  console.log("Hub server running at https://localhost:3000");
 });

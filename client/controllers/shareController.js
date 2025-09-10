@@ -1,3 +1,4 @@
+//client/controllers/shareController.js
 const fs = require("fs");
 const { walkDirectory } = require("../middleware/fileScanner");
 
