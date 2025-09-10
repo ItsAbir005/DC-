@@ -101,11 +101,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         case "fileKey":
           try {
             console.log(`\n Received encrypted key for file ${msg.fileHash}`);
+            const ivBuf = Buffer.from(msg.iv, "base64");
+
             const aesKey = decryptAESKey(msg.encryptedKey, "./keys/private.pem");
             const encryptedFilePath = path.join("./downloads", `${msg.fileHash}.enc`);
             const outputFilePath = path.join("./downloads", `${msg.fileHash}_decrypted`);
-            await decryptFile(encryptedFilePath, outputFilePath, aesKey, msg.iv);
-
+            await decryptFile(encryptedFilePath, outputFilePath, aesKey, ivBuf);
             console.log(` Decryption complete! File saved at: ${outputFilePath}`);
           } catch (err) {
             console.error(" Error decrypting file:", err.message);
@@ -226,7 +227,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           return;
         }
         const fileHash = parts[1];
-        ws.send(JSON.stringify({ type: "requestKeys", from: nickname, fileHash }));
+        ws.send(JSON.stringify({ type: "getFileKey", from: nickname, fileHash }));
         rl.prompt();
         return;
       }
