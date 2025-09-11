@@ -8,6 +8,11 @@ const { broadcast } = require("./middleware/broadcast");
 const { handlePrivateMessage } = require("./middleware/privateMessage");
 const { handleModeration } = require("./middleware/moderation");
 const selfsigned = require("selfsigned");
+const jwt = require("jsonwebtoken");
+
+// Secrets
+const AUTH_SECRET = process.env.AUTH_SECRET || "auth_secret_dev";  
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET || "download_secret_dev";  
 
 const app = express();
 const userFileIndexes = new Map();
@@ -219,6 +224,38 @@ wss.on("connection", (ws, req) => {
           hash: f.hash,
         })),
       }));
+      return;
+    }
+    if (parsed.type === "requestDownloadToken") {
+      const { fileHash } = parsed;
+
+      //Validate auth
+      if (!nickname || !connectedUsers.has(nickname)) {
+        ws.send(JSON.stringify({ type: "error", text: "Unauthorized" }));
+        return;
+      }
+      const fileMeta = sharedFiles.get(fileHash);
+      if (!fileMeta) {
+        ws.send(JSON.stringify({ type: "error", text: "File not found" }));
+        return;
+      }
+      if (!fileMeta.allowedUserIDs || !fileMeta.allowedUserIDs.has(nickname)) {
+        ws.send(JSON.stringify({ type: "error", text: "Access denied" }));
+        return;
+      }
+      const token = jwt.sign(
+        { fileHash },
+        DOWNLOAD_SECRET,
+        { expiresIn: "5m" }
+      );
+
+      ws.send(JSON.stringify({
+        type: "downloadToken",
+        fileHash,
+        token
+      }));
+
+      console.log(`Issued download token for ${nickname} on ${fileHash}`);
       return;
     }
 
