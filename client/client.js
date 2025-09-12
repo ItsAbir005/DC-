@@ -124,6 +124,11 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           }
           break;
 
+        case "downloadToken":
+          console.log(`\n Received download token for ${msg.fileHash}`);
+          console.log(` Token: ${msg.token}`);
+          break;
+
         case "chat":
         case "message":
           console.log(`\n${msg.from || "Server"}: ${msg.text}`);
@@ -231,6 +236,19 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         rl.prompt();
         return;
       }
+      // Request a download token from hub
+      if (msg.startsWith("!request_download_token ")) {
+        const parts = msg.split(" ");
+        if (parts.length < 2) {
+          console.log("Usage: !request_download_token <fileHash>");
+          rl.prompt();
+          return;
+        }
+        const fileHash = parts[1];
+        ws.send(JSON.stringify({ type: "requestDownloadToken", from: nickname, fileHash }));
+        rl.prompt();
+        return;
+      }
 
       // Request files from another user
       if (msg.startsWith("!list ")) {
@@ -252,3 +270,35 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
     });
   });
 });
+function handlePeerConnection(peerSocket) {
+  peerSocket.on("open", () => {
+    console.log("Peer connected");
+  });
+
+  peerSocket.on("message", (raw) => {
+    let req;
+    try {
+      req = JSON.parse(raw.toString());
+    } catch {
+      console.log(" Invalid JSON from peer");
+      peerSocket.close();
+      return;
+    }
+
+    if (req.type === "downloadRequest") {
+      const { fileHash, token } = req;
+      try {
+        const decoded = jwt.verify(token, "secret123");
+        if (decoded.fileHash !== fileHash) throw new Error("File hash mismatch");
+        console.log(` Valid token from ${decoded.nickname}, starting transfer of ${fileHash}`);
+        //stream file chunks here
+      } catch (err) {
+        console.error("Invalid/expired download token:", err.message);
+        peerSocket.close();
+      }
+    }
+  });
+
+  peerSocket.on("close", () => console.log("Peer disconnected"));
+  peerSocket.on("error", (err) => console.error("Peer error:", err.message));
+}
