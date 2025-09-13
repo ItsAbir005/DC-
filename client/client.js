@@ -293,7 +293,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
 });
 function handlePeerConnection(peerSocket) {
   peerSocket.on("open", () => {
-    console.log("Peer connected");
+    console.log("Connected to uploader peer, sending download request...");
+    peerSocket.send(JSON.stringify({
+      type: "downloadRequest",
+      fileHash,
+      token
+    }));
   });
 
   peerSocket.on("message", (raw) => {
