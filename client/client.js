@@ -127,6 +127,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         case "downloadToken":
           console.log(`\n Received download token for ${msg.fileHash}`);
           console.log(` Token: ${msg.token}`);
+          initiatePeerDownload(msg.fileHash, msg.token, msg.uploader);
           break;
 
         case "chat":
@@ -249,6 +250,26 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         rl.prompt();
         return;
       }
+      // Initiate peer-to-peer download
+      if (msg.startsWith("!download ")) {
+        const parts = msg.split(" ");
+        if (parts.length < 3) {
+          console.log("Usage: !download <fileHash> <uploaderNick>");
+          rl.prompt();
+          return;
+        }
+        const fileHash = parts[1];
+        const uploader = parts[2];
+
+        ws.send(JSON.stringify({
+          type: "requestDownloadToken",
+          from: nickname,
+          fileHash,
+          uploader
+        }));
+        rl.prompt();
+        return;
+      }
 
       // Request files from another user
       if (msg.startsWith("!list ")) {
@@ -297,8 +318,39 @@ function handlePeerConnection(peerSocket) {
         peerSocket.close();
       }
     }
+
   });
 
   peerSocket.on("close", () => console.log("Peer disconnected"));
+  peerSocket.on("error", (err) => console.error("Peer error:", err.message));
+}
+function initiatePeerDownload(fileHash, token, uploader) {
+  console.log(`\n Initiating peer connection to ${uploader} for file ${fileHash}...`);
+  const peerAddress = "ws://localhost:4000"; // Example peer endpoint
+
+  const peerSocket = new WebSocket(peerAddress);
+
+  peerSocket.on("open", () => {
+    console.log("Connected to uploader peer, sending download request...");
+    peerSocket.send(JSON.stringify({
+      type: "downloadRequest",
+      fileHash,
+      token
+    }));
+  });
+
+  peerSocket.on("message", (chunk) => {
+    // expect file chunks
+    const data = JSON.parse(chunk.toString());
+    if (data.type === "fileChunk") {
+      fs.appendFileSync(`./downloads/${fileHash}.enc`, Buffer.from(data.chunk, "base64"));
+      console.log(`Received chunk for ${fileHash} (${data.current}/${data.total})`);
+      if (data.current === data.total) {
+        console.log(`Download complete: ./downloads/${fileHash}.enc`);
+      }
+    }
+  });
+
+  peerSocket.on("close", () => console.log("Peer connection closed"));
   peerSocket.on("error", (err) => console.error("Peer error:", err.message));
 }
