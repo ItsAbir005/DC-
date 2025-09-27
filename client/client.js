@@ -12,6 +12,7 @@ const { generateAESKey, encryptAESKeyForRecipient } = require("./utils/cryptoUti
 const { decryptAESKey, decryptFile } = require("./controllers/decryptController");
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const CHUNK_SIZE = 4 * 1024 * 1024;
 
 rl.question("Enter your nickname: ", (nicknameRaw) => {
   const nickname = nicknameRaw.trim();
@@ -126,9 +127,9 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
 
         case "downloadToken":
           console.log(`\n Received download token for ${msg.fileHash}`);
-          console.log(` Token: ${msg.token}`);
-          initiatePeerDownload(msg.fileHash, msg.token, msg.uploader);
+          initiatePeerDownload(msg.fileHash, msg.token, msg.uploader, msg.chunkHashes, msg.chunkSize);
           break;
+
 
         case "chat":
         case "message":
@@ -329,11 +330,14 @@ function handlePeerConnection(peerSocket) {
   peerSocket.on("close", () => console.log("Peer disconnected"));
   peerSocket.on("error", (err) => console.error("Peer error:", err.message));
 }
-function initiatePeerDownload(fileHash, token, uploader) {
+function initiatePeerDownload(fileHash, token, uploader, expectedChunkHashes = []) {
   console.log(`\n Initiating peer connection to ${uploader} for file ${fileHash}...`);
-  const peerAddress = "ws://localhost:4000"; // Example peer endpoint
+  const peerAddress = "ws://localhost:4000"; // replace with dynamic peer address if needed
+
+  if (!fs.existsSync("./downloads")) fs.mkdirSync("./downloads");
 
   const peerSocket = new WebSocket(peerAddress);
+  let receivedChunks = 0;
 
   peerSocket.on("open", () => {
     console.log("Connected to uploader peer, sending download request...");
@@ -344,18 +348,46 @@ function initiatePeerDownload(fileHash, token, uploader) {
     }));
   });
 
-  peerSocket.on("message", (chunk) => {
-    // expect file chunks
-    const data = JSON.parse(chunk.toString());
+  let chunks = [];
+
+  peerSocket.on("message", (raw) => {
+    const data = JSON.parse(raw.toString());
+
+    if (data.type === "fileMetadata") {
+      expectedChunkHashes = data.expectedChunkHashes;
+      console.log(`Expecting ${data.totalChunks} chunks for file ${fileHash}`);
+    }
+
     if (data.type === "fileChunk") {
-      fs.appendFileSync(`./downloads/${fileHash}.enc`, Buffer.from(data.chunk, "base64"));
-      console.log(`Received chunk for ${fileHash} (${data.current}/${data.total})`);
-      if (data.current === data.total) {
-        console.log(`Download complete: ./downloads/${fileHash}.enc`);
+      const chunkBuffer = Buffer.from(data.chunk, "base64");
+
+      // Validate chunk hash
+      const hash = crypto.createHash("sha256").update(chunkBuffer).digest("hex");
+      if (expectedChunkHashes.length && hash !== expectedChunkHashes[data.current - 1]) {
+        console.error(`Hash mismatch at chunk ${data.current}`);
+        peerSocket.close();
+        return;
       }
+
+      chunks.push(chunkBuffer);
+      receivedChunks++;
+      console.log(` Received chunk ${data.current}/${data.total}`);
+    }
+
+    if (data.type === "fileComplete") {
+      const filePath = `./downloads/${fileHash}.enc`;
+      fs.writeFileSync(filePath, Buffer.concat(chunks));
+      console.log(` Download complete & verified: ${filePath}`);
+      peerSocket.close();
+    }
+
+    if (data.type === "error") {
+      console.error("Peer error:", data.text);
+      peerSocket.close();
     }
   });
 
   peerSocket.on("close", () => console.log("Peer connection closed"));
   peerSocket.on("error", (err) => console.error("Peer error:", err.message));
 }
+

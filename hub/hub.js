@@ -11,8 +11,8 @@ const selfsigned = require("selfsigned");
 const jwt = require("jsonwebtoken");
 
 // Secrets
-const AUTH_SECRET = process.env.AUTH_SECRET || "auth_secret_dev";  
-const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET || "download_secret_dev";  
+const AUTH_SECRET = process.env.AUTH_SECRET || "auth_secret_dev";
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET || "download_secret_dev";
 
 const app = express();
 const userFileIndexes = new Map();
@@ -102,8 +102,10 @@ wss.on("connection", (ws, req) => {
         encryptedKeys: normalizedKeys,
         iv: Buffer.isBuffer(parsed.iv) ? parsed.iv.toString("base64") : parsed.iv,
         allowedUserIDs: new Set(parsed.recipients),
+        chunkHashes: Array.isArray(parsed.chunkHashes) ? parsed.chunkHashes : [], // <- store chunk hashes
+        chunkSize: parsed.chunkSize || null,
+        chunks: parsed.chunks || null
       });
-
       for (const recipient of parsed.recipients) {
         const targetWS = connectedUsers.get(recipient);
         if (targetWS) {
@@ -243,16 +245,13 @@ wss.on("connection", (ws, req) => {
         ws.send(JSON.stringify({ type: "error", text: "Access denied" }));
         return;
       }
-      const token = jwt.sign(
-        { fileHash },
-        DOWNLOAD_SECRET,
-        { expiresIn: "5m" }
-      );
+      const token = jwt.sign({ fileHash }, DOWNLOAD_SECRET, { expiresIn: "5m" });
 
       ws.send(JSON.stringify({
         type: "downloadToken",
         fileHash,
-        token
+        token,
+        uploader: fileMeta.ownerID
       }));
 
       console.log(`Issued download token for ${nickname} on ${fileHash}`);
