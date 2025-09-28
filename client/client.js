@@ -193,9 +193,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         }
 
         const { key: aesKey, iv } = generateAESKey();
-        const encryptedFilePath = file.filePath
-          ? path.join(path.dirname(file.filePath), file.fileName + ".enc")
-          : file.fileName + ".enc";
+
+        // Always save encrypted copy in ./downloads/<hash>.enc
+        const downloadsDir = path.join(__dirname, "downloads");
+        if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
+        const encryptedFilePath = path.join(downloadsDir, `${fileHash}.enc`);
+
         const cipher = crypto.createCipheriv("aes-256-cbc", aesKey, iv);
         fs.createReadStream(file.filePath)
           .pipe(cipher)
