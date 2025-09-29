@@ -335,51 +335,61 @@ function handlePeerConnection(peerSocket) {
 }
 function initiatePeerDownload(fileHash, token, uploader, expectedChunkHashes = []) {
   console.log(`\n Initiating peer connection to ${uploader} for file ${fileHash}...`);
-  const peerAddress = "ws://localhost:4000"; // replace with dynamic peer address if needed
+  const peerAddress = "ws://localhost:4000";
 
   if (!fs.existsSync("./downloads")) fs.mkdirSync("./downloads");
+  const filePath = `./downloads/${fileHash}.enc`;
+
+  let startOffset = 0;
+  if (fs.existsSync(filePath)) {
+    startOffset = fs.statSync(filePath).size;
+    console.log(` Resuming download at offset ${startOffset}`);
+  }
 
   const peerSocket = new WebSocket(peerAddress);
-  let receivedChunks = 0;
+  const writeStream = fs.createWriteStream(filePath, { flags: "a" });
+  let startChunkIndex = 0;
 
   peerSocket.on("open", () => {
     console.log("Connected to uploader peer, sending download request...");
-    peerSocket.send(JSON.stringify({
-      type: "downloadRequest",
-      fileHash,
-      token
-    }));
+    peerSocket.send(
+      JSON.stringify({
+        type: "downloadRequest",
+        fileHash,
+        token,
+        startOffset,
+      })
+    );
   });
-
-  let chunks = [];
 
   peerSocket.on("message", (raw) => {
     const data = JSON.parse(raw.toString());
 
     if (data.type === "fileMetadata") {
       expectedChunkHashes = data.expectedChunkHashes;
-      console.log(`Expecting ${data.totalChunks} chunks for file ${fileHash}`);
+      startChunkIndex = data.startChunkIndex || 0;
+      console.log(
+        `Expecting ${data.totalChunks} chunks (starting at chunk ${startChunkIndex + 1})`
+      );
     }
 
     if (data.type === "fileChunk") {
       const chunkBuffer = Buffer.from(data.chunk, "base64");
-
-      // Validate chunk hash
       const hash = crypto.createHash("sha256").update(chunkBuffer).digest("hex");
-      if (expectedChunkHashes.length && hash !== expectedChunkHashes[data.current - 1]) {
+
+      const expectedHash = expectedChunkHashes[data.current - 1];
+      if (hash !== expectedHash) {
         console.error(`Hash mismatch at chunk ${data.current}`);
         peerSocket.close();
         return;
       }
 
-      chunks.push(chunkBuffer);
-      receivedChunks++;
+      writeStream.write(chunkBuffer);
       console.log(` Received chunk ${data.current}/${data.total}`);
     }
 
     if (data.type === "fileComplete") {
-      const filePath = `./downloads/${fileHash}.enc`;
-      fs.writeFileSync(filePath, Buffer.concat(chunks));
+      writeStream.end();
       console.log(` Download complete & verified: ${filePath}`);
       peerSocket.close();
     }
@@ -393,4 +403,6 @@ function initiatePeerDownload(fileHash, token, uploader, expectedChunkHashes = [
   peerSocket.on("close", () => console.log("Peer connection closed"));
   peerSocket.on("error", (err) => console.error("Peer error:", err.message));
 }
+
+
 
