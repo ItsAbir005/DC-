@@ -12,24 +12,24 @@ const wss = new WebSocket.Server({ port: PORT }, () => {
   console.log(`Uploader peer server listening ws://localhost:${PORT}`);
 });
 
-wss.on('connection', (ws) => {
-  console.log('Peer connected');
+wss.on("connection", (ws) => {
+  console.log("Peer connected");
   let engaged = false;
 
-  ws.on('message', async (raw) => {
-    if (engaged) return; // already serving
+  ws.on("message", async (raw) => {
+    if (engaged) return; // already serving one peer
 
     let req;
     try {
       req = JSON.parse(raw.toString());
     } catch (err) {
-      console.error('Invalid JSON from peer; closing');
+      console.error("Invalid JSON from peer; closing");
       ws.close();
       return;
     }
 
-    if (req.type !== 'downloadRequest' || !req.fileHash || !req.token) {
-      console.error('Bad request, closing');
+    if (req.type !== "downloadRequest" || !req.fileHash || !req.token) {
+      console.error("Bad request, closing");
       ws.close();
       return;
     }
@@ -37,24 +37,31 @@ wss.on('connection', (ws) => {
     // Verify token
     try {
       const decoded = jwt.verify(req.token, DOWNLOAD_SECRET);
-      if (decoded.fileHash !== req.fileHash) throw new Error('fileHash mismatch');
+      if (decoded.fileHash !== req.fileHash) throw new Error("fileHash mismatch");
       console.log(`Token valid for file ${req.fileHash}`);
     } catch (err) {
-      console.error('Token invalid/expired:', err.message);
-      ws.send(JSON.stringify({ type: 'error', text: 'Invalid or expired token' }));
+      console.error("Token invalid/expired:", err.message);
+      ws.send(JSON.stringify({ type: "error", text: "Invalid or expired token" }));
       ws.close();
       return;
     }
 
-    // locate encrypted file
-    const encPath = path.join(__dirname, 'downloads', `${req.fileHash}.enc`);
+    const encPath = path.join(__dirname, "downloads", `${req.fileHash}.enc`);
     if (!fs.existsSync(encPath)) {
-      ws.send(JSON.stringify({ type: 'error', text: 'File not available on uploader' }));
+      ws.send(JSON.stringify({ type: "error", text: "File not available on uploader" }));
       ws.close();
       return;
     }
 
-    // Compute chunk hashes for verification
+    const fileSize = fs.statSync(encPath).size;
+    const startOffset = req.startOffset || 0;
+    if (startOffset >= fileSize) {
+      ws.send(JSON.stringify({ type: "error", text: "Start offset beyond file size" }));
+      ws.close();
+      return;
+    }
+
+    // Compute chunk hashes for the whole file (for validation)
     const fileBuffer = fs.readFileSync(encPath);
     const totalChunks = Math.max(1, Math.ceil(fileBuffer.length / CHUNK_SIZE));
     const expectedChunkHashes = [];
@@ -66,45 +73,52 @@ wss.on('connection', (ws) => {
       expectedChunkHashes.push(hash);
     }
 
-    // send metadata first
-    ws.send(JSON.stringify({
-      type: 'fileMetadata',
-      fileHash: req.fileHash,
-      totalChunks,
-      expectedChunkHashes
-    }));
+    // Calculate starting chunk index
+    const startChunkIndex = Math.floor(startOffset / CHUNK_SIZE);
+
+    // Send metadata (includes total + hashes)
+    ws.send(
+      JSON.stringify({
+        type: "fileMetadata",
+        fileHash: req.fileHash,
+        totalChunks,
+        expectedChunkHashes,
+        startChunkIndex,
+        fileSize
+      })
+    );
 
     engaged = true;
-    let current = 0;
-    const readStream = fs.createReadStream(encPath, { highWaterMark: CHUNK_SIZE });
+    let current = startChunkIndex;
 
-    readStream.on('data', (chunk) => {
+    const readStream = fs.createReadStream(encPath, {
+      highWaterMark: CHUNK_SIZE,
+      start: startOffset
+    });
+
+    readStream.on("data", (chunk) => {
       current++;
-      const payload = {
-        type: 'fileChunk',
-        current,
-        total: totalChunks,
-        chunk: chunk.toString('base64')
-      };
-      ws.send(JSON.stringify(payload));
+      ws.send(
+        JSON.stringify({
+          type: "fileChunk",
+          current,
+          total: totalChunks,
+          chunk: chunk.toString("base64")
+        })
+      );
     });
 
-    readStream.on('end', () => {
-      ws.send(JSON.stringify({ type: 'fileComplete', fileHash: req.fileHash }));
-      console.log(`Finished sending ${req.fileHash}`);
+    readStream.on("end", () => {
+      ws.send(JSON.stringify({ type: "fileComplete", fileHash: req.fileHash }));
+      console.log(`Finished sending ${req.fileHash} (resumed at ${startOffset})`);
     });
 
-    readStream.on('error', (err) => {
-      console.error('Stream error:', err.message);
+    readStream.on("error", (err) => {
+      console.error("Stream error:", err.message);
       ws.close();
     });
   });
 
-  ws.on('close', () => {
-    console.log('Peer disconnected');
-  });
-
-  ws.on('error', (err) => {
-    console.error('Peer socket error:', err.message);
-  });
+  ws.on("close", () => console.log("Peer disconnected"));
+  ws.on("error", (err) => console.error("Peer socket error:", err.message));
 });
