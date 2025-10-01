@@ -12,7 +12,7 @@ import { registerUserKey, getUserKey } from "./controllers/userController.js";
 import { generateAESKey, encryptAESKeyForRecipient } from "./utils/cryptoUtils.js";
 import { decryptAESKey, decryptFile } from "./controllers/decryptController.js";
 import { initiatePeerDownload } from "./controllers/peerController.js";
-import { handleDownload } from "./middlewares/downloadMiddleware.js";
+import { handleDownload } from "./middleware/downloadMiddleware.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const CHUNK_SIZE = 4 * 1024 * 1024;
@@ -36,7 +36,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         process.exit(1);
       }
     } else {
-      console.log("ℹ No folder shared. Continuing without files...");
+      console.log("No folder shared. Continuing without files...");
     }
     const { privateKey: localPrivateKeyPem, publicKey: localPublicKeyPem } = ensureKeyPair();
     const token = jwt.sign({ nickname }, "secret123", { expiresIn: "1h" });
@@ -145,7 +145,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       if (!msg) return rl.prompt();
 
       if (msg === "!myfiles") {
-        console.log("\n📂 Your Files:");
+        console.log("\n Your Files:");
         if (!index.length) console.log(" (No files shared)");
         else index.forEach((f, i) => console.log(`${i + 1}. ${f.fileName} | hash: ${f.hash}`));
         return rl.prompt();
