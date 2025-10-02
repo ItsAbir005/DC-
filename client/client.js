@@ -11,13 +11,10 @@ import { ensureKeyPair } from "./controllers/keyController.js";
 import { registerUserKey, getUserKey } from "./controllers/userController.js";
 import { generateAESKey, encryptAESKeyForRecipient } from "./utils/cryptoUtils.js";
 import { decryptAESKey, decryptFile } from "./controllers/decryptController.js";
-import { initiatePeerDownload } from "./controllers/peerController.js";
 import { handleDownload } from "./middleware/downloadMiddleware.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const CHUNK_SIZE = 4 * 1024 * 1024;
-
-// CLI prompts
+const CHUNK_SIZE = 64 * 1024;
 rl.question("Enter your nickname: ", (nicknameRaw) => {
   const nickname = nicknameRaw.trim();
   if (!nickname) {
@@ -139,7 +136,6 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       console.error("\nWebSocket error:", err.message);
       rl.prompt();
     });
-    // CLI input handler
     rl.on("line", async (line) => {
       const msg = line.trim();
       if (!msg) return rl.prompt();
@@ -232,16 +228,197 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
     });
   });
 });
-//peer connection handler
-export function handlePeerConnection(peerSocket) {
-  peerSocket.on("message", (raw) => {
-    let req;
-    try { req = JSON.parse(raw.toString()); } catch { return; }
-    if (req.type === "downloadRequest") {
-      handleDownload(peerSocket, req, "./downloads");
-    }
-  });
 
-  peerSocket.on("close", () => console.log("Peer disconnected"));
-  peerSocket.on("error", (err) => console.error("Peer error:", err.message));
+export function initiatePeerDownload(fileHash, token, uploader, knownChunkHashes = [], baseDir = "./downloads") {
+  console.log(`\n🔌 Connecting to ${uploader} for file ${fileHash}...`);
+  const peerAddress = "ws://localhost:4000"; 
+
+  if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+  const filePath = path.join(baseDir, `${fileHash}.enc`);
+  let localSize = 0;
+  if (fs.existsSync(filePath)) {
+    localSize = fs.statSync(filePath).size;
+  }
+  let socket = null;
+  let remoteMeta = null; 
+  const receivedChunks = new Set();
+  const missingChunks = new Set();
+  let fd = null; 
+
+  function sha256Hex(buf) {
+    return crypto.createHash("sha256").update(buf).digest("hex");
+  }
+
+  function startConnection(startOffsetToSend = localSize) {
+    if (socket) {
+      socket.terminate();
+      socket = null;
+    }
+
+    socket = new WebSocket(peerAddress);
+
+    socket.on("open", () => {
+      console.log(` Connected to uploader peer, sending download request (startOffset=${startOffsetToSend})...`);
+      socket.send(JSON.stringify({ type: "downloadRequest", fileHash, token, startOffset: startOffsetToSend }));
+    });
+
+    socket.on("message", (raw) => {
+      let data;
+      try { data = JSON.parse(raw.toString()); } catch (e) {
+        console.error("Invalid JSON from peer");
+        return;
+      }
+
+      if (data.type === "error") {
+        console.error("Peer error:", data.text);
+        if (data.text && data.text.toLowerCase().includes("start offset") || data.text.toLowerCase().includes("start beyond")) {
+          console.log(" Received error about start offset. Closing connection.");
+          socket.close();
+        }
+        return;
+      }
+
+      if (data.type === "fileMetadata") {
+        remoteMeta = {
+          totalChunks: data.totalChunks,
+          expectedChunkHashes: (data.expectedChunkHashes || knownChunkHashes || []).slice(),
+          fileSize: data.fileSize,
+          startChunkIndex: typeof data.startChunkIndex === "number" ? data.startChunkIndex : 0
+        };
+        if (localSize > remoteMeta.fileSize) {
+          console.log(` Local partial file (${localSize}) is larger than remote file (${remoteMeta.fileSize}). Truncating local file.`);
+          fs.truncateSync(filePath, remoteMeta.fileSize);
+          localSize = remoteMeta.fileSize;
+        }
+        for (let i = 0; i < remoteMeta.totalChunks; i++) missingChunks.add(i);
+        if (localSize > 0) {
+          try {
+            // open fd if not yet
+            const readFd = fs.openSync(filePath, "r");
+            for (let ci = 0; ci < Math.ceil(localSize / CHUNK_SIZE); ci++) {
+              const start = ci * CHUNK_SIZE;
+              const length = Math.min(CHUNK_SIZE, remoteMeta.fileSize - start);
+              if (length <= 0) break;
+              const buf = Buffer.alloc(length);
+              fs.readSync(readFd, buf, 0, length, start);
+              const h = sha256Hex(buf);
+              if (remoteMeta.expectedChunkHashes[ci] && remoteMeta.expectedChunkHashes[ci] === h) {
+                missingChunks.delete(ci);
+                receivedChunks.add(ci);
+              } else {
+                missingChunks.add(ci);
+              }
+            }
+            fs.closeSync(readFd);
+          } catch (err) {
+            console.warn("Could not pre-verify local partial file:", err.message);
+          }
+        }
+        fd = fs.openSync(filePath, "a+"); 
+        console.log(`Expecting ${remoteMeta.totalChunks} chunks (fileSize=${remoteMeta.fileSize}). ${missingChunks.size} chunks to download.`);
+        return;
+      }
+      if (data.type === "fileChunk") {
+        const current1based = data.current;
+        const chunkIndex = (current1based - 1);
+
+        const chunkBuffer = Buffer.from(data.chunk, "base64");
+        const hash = sha256Hex(chunkBuffer);
+
+        const expected = remoteMeta?.expectedChunkHashes?.[chunkIndex];
+        if (expected && expected !== hash) {
+          console.error(` Hash mismatch at chunk ${chunkIndex}. Discarding and adding back to missing.`);
+          missingChunks.add(chunkIndex);
+          // don't write
+          return;
+        }
+        const position = chunkIndex * CHUNK_SIZE;
+        try {
+          fs.writeSync(fd, chunkBuffer, 0, chunkBuffer.length, position);
+          receivedChunks.add(chunkIndex);
+          missingChunks.delete(chunkIndex);
+          console.log(` Received/Stored chunk ${chunkIndex + 1}/${remoteMeta.totalChunks}`);
+        } catch (err) {
+          console.error("Write failed:", err.message);
+          missingChunks.add(chunkIndex);
+        }
+        if (receivedChunks.size === remoteMeta.totalChunks) {
+          finishDownloadAndVerify();
+        }
+        return;
+      }
+      if (data.type === "chunkData") {
+        const chunkIndex = data.chunkIndex;
+        const chunkBuffer = Buffer.from(data.chunk, "base64");
+        const hash = sha256Hex(chunkBuffer);
+        const expected = remoteMeta?.expectedChunkHashes?.[chunkIndex];
+        if (expected && expected !== hash) {
+          console.error(` Hash mismatch at chunk ${chunkIndex}. Keeping it in missing list.`);
+          missingChunks.add(chunkIndex);
+          return;
+        }
+        const position = chunkIndex * CHUNK_SIZE;
+        try {
+          if (!fd) fd = fs.openSync(filePath, "a+");
+          fs.writeSync(fd, chunkBuffer, 0, chunkBuffer.length, position);
+          receivedChunks.add(chunkIndex);
+          missingChunks.delete(chunkIndex);
+          console.log(` Received/Stored chunk ${chunkIndex + 1}/${remoteMeta.totalChunks}`);
+        } catch (err) {
+          console.error("Write failed:", err.message);
+          missingChunks.add(chunkIndex);
+        }
+
+        if (receivedChunks.size === remoteMeta.totalChunks) {
+          finishDownloadAndVerify();
+        }
+        return;
+      }
+
+      if (data.type === "fileComplete") {
+        if (remoteMeta && receivedChunks.size === remoteMeta.totalChunks) {
+          finishDownloadAndVerify();
+        } else {
+          console.log("Peer signaled fileComplete but we haven't received all chunks yet.");
+        }
+      }
+    });
+
+    socket.on("close", () => {
+      console.log("Peer connection closed");
+    });
+
+    socket.on("error", (err) => {
+      console.error("Peer socket error:", err.message);
+    });
+  } 
+
+  function finishDownloadAndVerify() {
+    if (!remoteMeta) {
+      console.log("No remote metadata to verify against.");
+      if (fd) fs.closeSync(fd);
+      return;
+    }
+    if (fd) { try { fs.closeSync(fd); } catch (_) {} fd = null; }
+    const wholeBuffer = fs.readFileSync(filePath);
+    let ok = true;
+    for (let i = 0; i < remoteMeta.totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, wholeBuffer.length);
+      const slice = wholeBuffer.slice(start, end);
+      const h = sha256Hex(slice);
+      if (remoteMeta.expectedChunkHashes[i] !== h) {
+        console.error(` Final verification failed for chunk ${i}. expected=${remoteMeta.expectedChunkHashes[i]}, got=${h}`);
+        ok = false;
+        break;
+      }
+    }
+
+    if (ok) {
+      console.log(`Download complete & verified: ${filePath}`);
+    } else {
+      console.error(" Download finished but verification failed. You should re-request missing/corrupt chunks from peers.");
+    }
+  }
+  startConnection(localSize);
 }
