@@ -34,7 +34,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         process.exit(1);
       }
     } else {
-      console.log("ℹ No folder shared. Continuing without files...");
+      console.log(" No folder shared. Continuing without files...");
     }
 
     // generate RSA keypair
@@ -215,8 +215,23 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         ws.send(JSON.stringify({ type: "listRequest", from: nickname, target: targetNick }));
         return rl.prompt();
       }
-
-      // fallback: normal chat
+      
+      if (msg.startsWith("!revoke")) {
+        const [, fileHash, targetUser] = msg.trim().split(" ");
+        if (!fileHash || !targetUser) {
+          console.log("Usage: !revoke <fileHash> <targetUser>");
+        } else {
+          ws.send(
+            JSON.stringify({
+              type: "revokeFileAccess",
+              fileHash,
+              targetUser,
+            })
+          );
+        }
+        return;
+      }
+      // normal chat
       ws.send(JSON.stringify({ type: "message", from: nickname, text: msg }));
       rl.prompt();
     });

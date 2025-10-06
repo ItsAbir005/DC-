@@ -10,7 +10,6 @@ const { handleModeration } = require("./middleware/moderation");
 const selfsigned = require("selfsigned");
 const jwt = require("jsonwebtoken");
 
-// Secrets
 const AUTH_SECRET = process.env.AUTH_SECRET || "auth_secret_dev";
 const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET || "download_secret_dev";
 
@@ -18,19 +17,20 @@ const app = express();
 const userFileIndexes = new Map();
 const userPublicKeys = new Map();
 
-// Generate SSL certs if missing
+//Revocation system
+const revocationList = new Map();
+
+//Generate SSL certs if missing
 if (!fs.existsSync("key.pem") || !fs.existsSync("cert.pem")) {
   console.log("No SSL certs found. Generating self-signed certificate...");
   const attrs = [{ name: "commonName", value: "localhost" }];
   const pems = selfsigned.generate(attrs, { days: 365 });
-
   fs.writeFileSync("key.pem", pems.private);
   fs.writeFileSync("cert.pem", pems.cert);
-
   console.log("key.pem and cert.pem generated!");
 }
 
-// HTTPS + WSS server
+//HTTPS + WSS server
 const server = https.createServer(
   {
     key: fs.readFileSync("key.pem"),
@@ -43,7 +43,7 @@ app.get("/", (req, res) => {
   res.send("Hub is running securely over HTTPS!");
 });
 
-// In-memory store
+//In-memory store
 const connectedUsers = new Map();
 const sharedFiles = new Map();
 
@@ -75,6 +75,8 @@ wss.on("connection", (ws, req) => {
       console.log(`[${nickname}] sent invalid JSON`);
       return;
     }
+
+    //File Sharing
     if (parsed.type === "shareRequest") {
       const { fileHash, userIDs } = parsed;
       sharedFiles.set(fileHash, {
@@ -83,7 +85,6 @@ wss.on("connection", (ws, req) => {
         ownerID: nickname,
         allowedUserIDs: new Set(userIDs),
       });
-
       console.log(`${nickname} shared file ${fileHash} with users: ${userIDs.join(", ")}`);
       ws.send(JSON.stringify({ type: "shareAck", fileHash, userIDs }));
       return;
@@ -102,7 +103,7 @@ wss.on("connection", (ws, req) => {
         encryptedKeys: normalizedKeys,
         iv: Buffer.isBuffer(parsed.iv) ? parsed.iv.toString("base64") : parsed.iv,
         allowedUserIDs: new Set(parsed.recipients),
-        chunkHashes: Array.isArray(parsed.chunkHashes) ? parsed.chunkHashes : [], // <- store chunk hashes
+        chunkHashes: Array.isArray(parsed.chunkHashes) ? parsed.chunkHashes : [],
         chunkSize: parsed.chunkSize || null,
         chunks: parsed.chunks || null
       });
@@ -122,6 +123,31 @@ wss.on("connection", (ws, req) => {
       ws.send(JSON.stringify({ type: "shareAck", fileHash: parsed.fileHash }));
       return;
     }
+
+    //Revocation System
+    if (parsed.type === "revokeAccess") {
+      const { fileHash, targetUser } = parsed;
+      const fileMeta = sharedFiles.get(fileHash);
+
+      if (!fileMeta) {
+        ws.send(JSON.stringify({ type: "system", text: " File not found." }));
+        return;
+      }
+
+      if (fileMeta.ownerID !== nickname) {
+        ws.send(JSON.stringify({ type: "system", text: " You are not the owner of this file." }));
+        return;
+      }
+
+      if (!revocationList.has(fileHash)) revocationList.set(fileHash, new Set());
+      revocationList.get(fileHash).add(targetUser);
+
+      ws.send(JSON.stringify({ type: "system", text: ` Access revoked for user '${targetUser}' on file ${fileHash}` }));
+      console.log(` ${nickname} revoked ${targetUser} for file ${fileHash}`);
+      return;
+    }
+
+    //File Access
     if (parsed.type === "getFileKey") {
       const fileMeta = sharedFiles.get(parsed.fileHash);
       if (!fileMeta || !fileMeta.allowedUserIDs.has(nickname)) {
@@ -140,11 +166,10 @@ wss.on("connection", (ws, req) => {
       } catch (err) {
         console.error("Failed to send to client:", err);
       }
-
       return;
     }
 
-    //User and key management
+    //User Management
     if (parsed.type === "getUsers") {
       const users = [...connectedUsers.keys()].map((nick, i) => ({
         id: `u${i + 1}`,
@@ -155,28 +180,6 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    if (parsed.type === "requestKey") {
-      const target = parsed.target || parsed.nickname;
-      const pubKey = userPublicKeys.get(target);
-
-      if (!pubKey) {
-        ws.send(JSON.stringify({ type: "system", text: `No public key found for ${target}` }));
-        return;
-      }
-
-      ws.send(JSON.stringify({ type: "userKey", nickname: target, publicKey: pubKey }));
-      return;
-    }
-
-    if (parsed.type === "getPublicKey") {
-      const pubKey = userPublicKeys.get(parsed.target);
-      if (!pubKey) {
-        ws.send(JSON.stringify({ type: "system", text: `No public key found for ${parsed.target}` }));
-        return;
-      }
-      ws.send(JSON.stringify({ type: "publicKey", user: parsed.target, key: pubKey }));
-      return;
-    }
     if (parsed.type === "registerKey") {
       const { from, publicKey } = parsed;
       userPublicKeys.set(from, publicKey);
@@ -185,66 +188,34 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    //File listing
-    if (parsed.type === "fileIndex") {
-      if (Array.isArray(parsed.files)) {
-        userFileIndexes.set(nickname, parsed.files);
-        console.log(`${nickname} shared ${parsed.files.length} files in index`);
-      }
-      return;
-    }
-
-    if (parsed.type === "listRequest") {
-      const targetNick = parsed.target;
-      const targetFiles = userFileIndexes.get(targetNick);
-
-      if (!targetFiles || targetFiles.length === 0) {
-        ws.send(JSON.stringify({ type: "system", text: `${targetNick} has not shared any files.` }));
-        return;
-      }
-
-      const visibleFiles = targetFiles.filter(f => {
-        const sharedMeta = sharedFiles.get(f.hash);
-        if (!sharedMeta) return false;
-        return (
-          sharedMeta.ownerID === targetNick &&
-          (sharedMeta.allowedUserIDs.has(nickname) || targetNick === nickname)
-        );
-      });
-
-      if (visibleFiles.length === 0) {
-        ws.send(JSON.stringify({ type: "system", text: `You don't have access to ${targetNick}'s files.` }));
-        return;
-      }
-
-      ws.send(JSON.stringify({
-        type: "fileList",
-        owner: targetNick,
-        files: visibleFiles.map(f => ({
-          fileName: f.fileName,
-          size: f.size || 0,
-          hash: f.hash,
-        })),
-      }));
-      return;
-    }
+    //Download Token Issuance
     if (parsed.type === "requestDownloadToken") {
       const { fileHash } = parsed;
 
-      //Validate auth
       if (!nickname || !connectedUsers.has(nickname)) {
         ws.send(JSON.stringify({ type: "error", text: "Unauthorized" }));
         return;
       }
+
       const fileMeta = sharedFiles.get(fileHash);
       if (!fileMeta) {
         ws.send(JSON.stringify({ type: "error", text: "File not found" }));
         return;
       }
+
+      //Check revocation before allowing token issue
+      const revokedSet = revocationList.get(fileHash);
+      if (revokedSet && revokedSet.has(nickname)) {
+        ws.send(JSON.stringify({ type: "error", text: ` Access denied: You are revoked for ${fileHash}` }));
+        console.log(`Blocked token request: ${nickname} revoked for ${fileHash}`);
+        return;
+      }
+
       if (!fileMeta.allowedUserIDs || !fileMeta.allowedUserIDs.has(nickname)) {
         ws.send(JSON.stringify({ type: "error", text: "Access denied" }));
         return;
       }
+
       const token = jwt.sign({ fileHash }, DOWNLOAD_SECRET, { expiresIn: "5m" });
 
       ws.send(JSON.stringify({
@@ -258,13 +229,10 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    //Private messages
+    //Messages and Moderation
     if (handlePrivateMessage(connectedUsers, nickname, ws, parsed)) return;
-
-    //Moderation
     if (handleModeration(connectedUsers, nickname, ws, parsed)) return;
 
-    //Public chat
     if (parsed.type === "chat" || parsed.text) {
       const outgoing = JSON.stringify({ type: "message", from: nickname, text: parsed.text });
       broadcast(connectedUsers, outgoing);
