@@ -215,7 +215,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         ws.send(JSON.stringify({ type: "listRequest", from: nickname, target: targetNick }));
         return rl.prompt();
       }
-      
+
       if (msg.startsWith("!revoke")) {
         const [, fileHash, targetUser] = msg.trim().split(" ");
         if (!fileHash || !targetUser) {
@@ -223,14 +223,15 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         } else {
           ws.send(
             JSON.stringify({
-              type: "revokeFileAccess",
+              type: "revokeAccess",  
               fileHash,
-              targetUser,
+              targetUserID: targetUser, 
             })
           );
         }
         return;
       }
+
       // normal chat
       ws.send(JSON.stringify({ type: "message", from: nickname, text: msg }));
       rl.prompt();
