@@ -88,8 +88,6 @@ wss.on("connection", (ws, req) => {
         RevocationList.set(fileHash, new Set());
       }
       RevocationList.get(fileHash).add(targetUserID);
-
-      // Optionally, remove target from allowed list
       if (fileMeta.allowedUserIDs?.has(targetUserID)) {
         fileMeta.allowedUserIDs.delete(targetUserID);
       }
@@ -104,6 +102,32 @@ wss.on("connection", (ws, req) => {
           type: "revokedNotice",
           text: `Your access to file ${fileHash} has been revoked by ${nickname}.`
         }));
+      }
+      return;
+    }
+    if (parsed.type === "rotateKey") {
+      const { fileHash, newEncryptedKeys, newIV } = parsed;
+      const fileMeta = sharedFiles.get(fileHash);
+
+      if (!fileMeta || fileMeta.ownerID !== nickname) {
+        ws.send(JSON.stringify({ type: "error", text: "Unauthorized key rotation." }));
+        return;
+      }
+
+      // Replace old keys with new ones for allowed users only
+      fileMeta.encryptedKeys = newEncryptedKeys;
+      fileMeta.iv = newIV;
+
+      console.log(` Key rotated for file ${fileHash} by ${nickname}`);
+      ws.send(JSON.stringify({ type: "system", text: `Key rotated successfully for ${fileHash}` }));
+      for (const user of fileMeta.allowedUserIDs) {
+        const targetWS = connectedUsers.get(user);
+        if (targetWS) {
+          targetWS.send(JSON.stringify({
+            type: "keyRotatedNotice",
+            text: `Key rotated for ${fileHash} by ${nickname}. You can now fetch the new key.`,
+          }));
+        }
       }
       return;
     }
