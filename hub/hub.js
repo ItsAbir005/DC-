@@ -195,6 +195,45 @@ wss.on("connection", (ws, req) => {
       }));
       return;
     }
+    // Handle file key updates by owner
+    if (parsed.type === "updateFileKeys") {
+      const { fileHash, newIV, newEncryptedKeys } = parsed;
+      const fileMeta = sharedFiles.get(fileHash);
+      if (!fileMeta || fileMeta.ownerID !== nickname) {
+        ws.send(JSON.stringify({
+          type: "error",
+          text: "Unauthorized: Only the owner can update file keys."
+        }));
+        return;
+      }
+      if (!newIV || !newEncryptedKeys || typeof newEncryptedKeys !== "object") {
+        ws.send(JSON.stringify({
+          type: "error",
+          text: "Invalid update payload."
+        }));
+        return;
+      }
+      fileMeta.iv = newIV;
+      fileMeta.encryptedKeys = newEncryptedKeys;
+
+      console.log(` File keys updated for ${fileHash} by ${nickname}`);
+
+      ws.send(JSON.stringify({
+        type: "system",
+        text: `File keys successfully updated for ${fileHash}.`
+      }));
+      for (const user of fileMeta.allowedUserIDs) {
+        const targetWS = connectedUsers.get(user);
+        if (targetWS) {
+          targetWS.send(JSON.stringify({
+            type: "keyUpdateNotice",
+            text: `File ${fileHash} keys have been updated by ${nickname}. Please fetch the new key.`,
+          }));
+        }
+      }
+
+      return;
+    }
 
     if (parsed.type === "requestDownloadToken") {
       const { fileHash } = parsed;
@@ -225,7 +264,7 @@ wss.on("connection", (ws, req) => {
       console.log(` Issued download token for ${nickname} on ${fileHash}`);
       return;
     }
-
+    // Handle public key registration
     if (parsed.type === "registerKey") {
       const { from, publicKey } = parsed;
       userPublicKeys.set(from, publicKey);
