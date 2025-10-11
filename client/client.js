@@ -84,14 +84,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         process.exit(1);
       }
     } else {
-      console.log("ℹ No folder shared. Continuing without files...");
+      console.log(" No folder shared. Continuing without files...");
     }
 
     const { publicKey: localPublicKeyPem } = ensureKeyPair();
     const token = jwt.sign({ nickname }, "secret123", { expiresIn: "1h" });
-    const ws = new WebSocket(`wss://localhost:3000/?token=${token}`, {
-      rejectUnauthorized: false,
-    });
+    const ws = new WebSocket(`ws://localhost:8080/?token=${token}`);
 
     ws.on("open", () => {
       console.log(` Connected to hub as ${nickname}`);

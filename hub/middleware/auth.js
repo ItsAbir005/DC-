@@ -1,5 +1,7 @@
-const jwt = require("jsonwebtoken");
-function verifyToken(token) {
+//middleware/auth.js
+import jwt from "jsonwebtoken";
+
+export function verifyToken(token) {
   if (!token) return null;
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret123");
@@ -9,4 +11,3 @@ function verifyToken(token) {
     return null;
   }
 }
-module.exports = { verifyToken };
