@@ -11,28 +11,30 @@ const db = await initDB();
 
 console.log(`Hub running on ws://localhost:${PORT}`);
 
+//  Centralized Audit Logger
 async function logAudit({ acting_user_id, file_hash = null, action_type, status, details = "" }) {
   try {
     await db.run(
       `INSERT INTO AuditLog (acting_user_id, file_hash, action_type, status, details)
        VALUES (?, ?, ?, ?, ?)`,
-      [acting_user_id, file_hash, action_type, status, details]
+      [acting_user_id, file_hash, action_type, status, JSON.stringify(details)]
     );
   } catch (err) {
     console.error("Audit log failed:", err.message);
   }
 }
 
-// Active download tokens
 const activeTokens = new Map();
 
-// WebSocket connection
+//  WebSocket Server
 const wss = new WebSocketServer({ port: PORT });
 
 wss.on("connection", async (ws, req) => {
   const params = new URLSearchParams(req.url.split("?")[1]);
   const token = params.get("token");
   let currentUser = null;
+
+  //  Authentication
   try {
     const decoded = jwt.verify(token, "secret123");
     currentUser = decoded.nickname;
@@ -49,10 +51,10 @@ wss.on("connection", async (ws, req) => {
     });
 
     connectedUsers.set(currentUser, ws);
-    console.log(` ${currentUser} connected`);
     ws.send(JSON.stringify({ type: "system", text: `Welcome ${currentUser}!` }));
+    console.log(`${currentUser} connected`);
   } catch (err) {
-    console.log(" Invalid token attempt:", err.message);
+    console.log("Invalid token attempt:", err.message);
     await logAudit({
       acting_user_id: "Unknown",
       action_type: "LOGIN_ATTEMPT",
@@ -63,10 +65,30 @@ wss.on("connection", async (ws, req) => {
     return;
   }
 
-  // Handle messages
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
+      if (msg.type === "shareFile") {
+        const { fileHash, fileName, iv, encryptedKeys, allowedUsers } = msg;
+
+        await db.run(
+          `INSERT OR REPLACE INTO Files (file_hash, owner, file_name, iv, encrypted_keys, allowed_users)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [fileHash, currentUser, fileName, iv, JSON.stringify(encryptedKeys), JSON.stringify(allowedUsers)]
+        );
+
+        await logAudit({
+          acting_user_id: currentUser,
+          file_hash: fileHash,
+          action_type: "FILE_SHARED",
+          status: "SUCCESS",
+          details: { fileName, allowedUsers },
+        });
+
+        ws.send(JSON.stringify({ type: "system", text: `File ${fileName} shared successfully.` }));
+        return;
+      }
+
       if (msg.type === "requestDownloadToken") {
         const { fileHash, uploader } = msg;
 
@@ -112,21 +134,15 @@ wss.on("connection", async (ws, req) => {
           ws.send(JSON.stringify({ type: "error", text: "You don’t have permission." }));
           return;
         }
+
         const token = Math.random().toString(36).substring(2, 10);
         activeTokens.set(token, {
           user: currentUser,
           fileHash,
-          expires: Date.now() + 5 * 60 * 1000, // 5 minutes
+          expires: Date.now() + 5 * 60 * 1000,
         });
 
-        ws.send(
-          JSON.stringify({
-            type: "downloadToken",
-            token,
-            fileHash,
-            uploader,
-          })
-        );
+        ws.send(JSON.stringify({ type: "downloadToken", token, fileHash, uploader }));
 
         await logAudit({
           acting_user_id: currentUser,
@@ -135,40 +151,82 @@ wss.on("connection", async (ws, req) => {
           status: "SUCCESS",
           details: "Download token granted.",
         });
-
         return;
       }
 
-      // Other middleware handlers
+      if (msg.type === "revokeAccess") {
+        const { fileHash, targetUser } = msg;
+
+        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
+        if (!file || file.owner !== currentUser) {
+          ws.send(JSON.stringify({ type: "error", text: "You are not the owner of this file." }));
+          return;
+        }
+
+        await db.run(
+          `INSERT INTO Revocations (file_hash, revoked_user) VALUES (?, ?)`,
+          [fileHash, targetUser]
+        );
+
+        await logAudit({
+          acting_user_id: currentUser,
+          file_hash: fileHash,
+          action_type: "ACCESS_REVOKED",
+          status: "SUCCESS",
+          details: { revoked_user_id: targetUser },
+        });
+
+        ws.send(JSON.stringify({ type: "system", text: `Access revoked for ${targetUser}.` }));
+        return;
+      }
+
+      if (msg.type === "updateFileKeys") {
+        const { fileHash, newIV, newEncryptedKeys } = msg;
+
+        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
+        if (!file || file.owner !== currentUser) {
+          ws.send(JSON.stringify({ type: "error", text: "Only owner can rotate keys." }));
+          return;
+        }
+
+        await db.run(
+          `UPDATE Files SET iv = ?, encrypted_keys = ? WHERE file_hash = ?`,
+          [newIV, JSON.stringify(newEncryptedKeys), fileHash]
+        );
+
+        await logAudit({
+          acting_user_id: currentUser,
+          file_hash: fileHash,
+          action_type: "KEY_ROTATED",
+          status: "SUCCESS",
+          details: { newIV },
+        });
+
+        ws.send(JSON.stringify({ type: "system", text: "Key rotation successful." }));
+        return;
+      }
+
       if (handlePrivateMessage(connectedUsers, currentUser, ws, msg)) return;
       if (handleModeration(connectedUsers, currentUser, ws, msg)) return;
 
-      // Normal chat
       broadcast(
         connectedUsers,
-        JSON.stringify({
-          type: "chat",
-          from: currentUser,
-          text: msg.text,
-        })
+        JSON.stringify({ type: "chat", from: currentUser, text: msg.text })
       );
     } catch (err) {
       console.error("Message error:", err.message);
     }
   });
 
-  // Disconnect
+  //  Disconnect
   ws.on("close", () => {
     if (currentUser) {
       connectedUsers.delete(currentUser);
       broadcast(
         connectedUsers,
-        JSON.stringify({
-          type: "system",
-          text: `${currentUser} disconnected.`,
-        })
+        JSON.stringify({ type: "system", text: `${currentUser} disconnected.` })
       );
-      console.log(`🔌 ${currentUser} disconnected`);
+      console.log(` ${currentUser} disconnected`);
     }
   });
 });
