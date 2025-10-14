@@ -9,6 +9,25 @@ const PORT = 8080;
 const connectedUsers = new Map();
 const db = await initDB();
 
+// 🧩 Peer Connection Logging (for uploader side)
+export async function logPeerConnectionAttempt(uploader, downloader) {
+  await logAudit({
+    acting_user_id: uploader,
+    action_type: "PEER_CONNECT_ATTEMPT",
+    status: "PENDING",
+    details: { downloader }
+  });
+}
+
+export async function logPeerVerificationFailure(uploader, downloader, reason) {
+  await logAudit({
+    acting_user_id: uploader,
+    action_type: "PEER_CONNECT_ATTEMPT",
+    status: "DENIED",
+    details: { downloader, reason }
+  });
+}
+
 console.log(`Hub running on ws://localhost:${PORT}`);
 
 //  Centralized Audit Logger
@@ -151,6 +170,19 @@ wss.on("connection", async (ws, req) => {
           status: "SUCCESS",
           details: "Download token granted.",
         });
+        return;
+      }
+      if (msg.type === "!download_complete") {
+        const { fileHash } = msg;
+        await logAudit({
+          acting_user_id: currentUser,
+          file_hash: fileHash,
+          action_type: "DOWNLOAD_COMPLETE",
+          status: "SUCCESS",
+          details: "Downloader verified and assembled file successfully."
+        });
+
+        ws.send(JSON.stringify({ type: "system", text: "Download completion logged." }));
         return;
       }
 
