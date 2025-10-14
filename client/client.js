@@ -1,4 +1,4 @@
-// client.js
+//client/client.js
 import readline from "readline";
 import jwt from "jsonwebtoken";
 import WebSocket from "ws";
