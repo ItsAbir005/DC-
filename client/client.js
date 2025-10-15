@@ -155,6 +155,14 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           );
           break;
 
+        case "auditLog":
+          console.log(`\nAudit Log for ${msg.fileHash}:`);
+          if (!msg.logs.length) console.log("No events logged yet.");
+          else msg.logs.forEach(log => {
+            console.log(`[${log.timestamp}] ${log.acting_user_id} → ${log.action_type} (${log.status}) ${log.details}`);
+          });
+          break;
+
         case "chat":
         case "message":
           console.log(`${msg.from || "Hub"}: ${msg.text}`);
@@ -252,6 +260,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
             rl.prompt();
           });
         return;
+      }
+
+      if (msg.startsWith("!view_log ")) {
+        const [, fileHash] = msg.split(" ");
+        ws.send(JSON.stringify({ type: "!get_audit_log", fileHash }));
+        return rl.prompt();
       }
 
       if (msg.startsWith("!request_keys ")) {

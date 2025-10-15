@@ -1,3 +1,4 @@
+//hub/hub.js
 import { WebSocketServer } from "ws";
 import jwt from "jsonwebtoken";
 import { broadcast } from "./middleware/broadcast.js";
@@ -9,7 +10,6 @@ const PORT = 8080;
 const connectedUsers = new Map();
 const db = await initDB();
 
-// 🧩 Peer Connection Logging (for uploader side)
 export async function logPeerConnectionAttempt(uploader, downloader) {
   await logAudit({
     acting_user_id: uploader,
@@ -107,6 +107,42 @@ wss.on("connection", async (ws, req) => {
         ws.send(JSON.stringify({ type: "system", text: `File ${fileName} shared successfully.` }));
         return;
       }
+
+      if (msg.text && msg.text.startsWith("!share")) {
+        const [_, fileHash, ...allowedUsers] = msg.text.split(" ");
+        const allowedList = allowedUsers.join(",") || "";
+
+        // Check if file already exists
+        const existing = await db.get(`SELECT file_hash FROM Files WHERE file_hash = ?`, [fileHash]);
+        if (!existing) {
+          await db.run(
+            `INSERT INTO Files (file_hash, owner, file_name, iv, encrypted_keys, allowed_users)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              fileHash,
+              currentUser,
+              "Unknown", // Or pass actual filename if available
+              "iv_placeholder",
+              "encrypted_keys_placeholder",
+              allowedList
+            ]
+          );
+        }
+
+        // Log the event
+        await db.run(
+          `INSERT INTO AuditLog (acting_user_id, file_hash, action_type, status, details)
+     VALUES (?, ?, 'FILE_SHARED', 'SUCCESS', ?)`,
+          [currentUser, fileHash, JSON.stringify({ shared_with: allowedList })]
+        );
+
+        ws.send(JSON.stringify({
+          type: "info",
+          text: `File shared successfully and logged for ${fileHash}`
+        }));
+        return true;
+      }
+
 
       if (msg.type === "requestDownloadToken") {
         const { fileHash, uploader } = msg;
@@ -209,6 +245,34 @@ wss.on("connection", async (ws, req) => {
         });
 
         ws.send(JSON.stringify({ type: "system", text: `Access revoked for ${targetUser}.` }));
+        return;
+      }
+
+      if (msg.text && msg.text.startsWith("!get_audit_log")) {
+        const [_, fileHash] = msg.text.split(" ");
+        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
+
+        if (!file) {
+          ws.send(JSON.stringify({ type: "error", text: "File not found." }));
+          return;
+        }
+
+        if (file.owner !== currentUser) {
+          ws.send(JSON.stringify({ type: "error", text: "Access denied. Only owner can view audit log." }));
+          return;
+        }
+
+        const logs = await db.all(
+          `SELECT timestamp, acting_user_id, action_type, status, details 
+     FROM AuditLog WHERE file_hash = ? ORDER BY timestamp DESC`,
+          [fileHash]
+        );
+
+        ws.send(JSON.stringify({
+          type: "auditLog",
+          fileHash,
+          logs
+        }));
         return;
       }
 
