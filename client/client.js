@@ -157,16 +157,18 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
 
         case "auditLog":
           console.log(`\nAudit Log for ${msg.fileHash}:`);
-          if (!msg.logs.length) console.log("No events logged yet.");
-          else msg.logs.forEach(log => {
-            console.log(`[${log.timestamp}] ${log.acting_user_id} → ${log.action_type} (${log.status}) ${log.details}`);
+          msg.logs.forEach(log => {
+            console.log(`[${log.timestamp}] ${log.acting_user_id} -> ${log.action_type} (${log.status})`);
           });
+          rl.prompt();
           break;
 
         case "chat":
         case "message":
-          console.log(`${msg.from || "Hub"}: ${msg.text}`);
+          if (msg.text) console.log(`${msg.from || "Hub"}: ${msg.text}`);
+          else console.log(`[${msg.type}]`, msg);
           break;
+
 
         case "revocationConfirmed":
           console.log(` Revocation confirmed: ${msg.revokedUser} removed for ${msg.fileHash}`);
@@ -261,12 +263,26 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           });
         return;
       }
+      if (msg.text && !msg.text.startsWith("!")) {
+        broadcast(
+          connectedUsers,
+          JSON.stringify({
+            type: "chat",
+            from: currentUser,
+            text: msg.text,
+          })
+        );
+      }
+      if (msg.type === "chat" && msg.text) {
+        console.log(`> ${msg.from}: ${msg.text}`);
+      }
 
       if (msg.startsWith("!view_log ")) {
         const [, fileHash] = msg.split(" ");
-        ws.send(JSON.stringify({ type: "!get_audit_log", fileHash }));
+        ws.send(JSON.stringify({ type: "get_audit_log", fileHash }));
         return rl.prompt();
       }
+
 
       if (msg.startsWith("!request_keys ")) {
         const [, fileHash] = msg.split(" ");
