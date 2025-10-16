@@ -248,10 +248,10 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
-      if (msg.text && msg.text.startsWith("!get_audit_log")) {
-        const [_, fileHash] = msg.text.split(" ");
-        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
+      if (msg.type === "get_audit_log") {
+        const { fileHash } = msg;
 
+        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
         if (!file) {
           ws.send(JSON.stringify({ type: "error", text: "File not found." }));
           return;
