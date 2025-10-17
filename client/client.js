@@ -8,7 +8,7 @@ import crypto from "crypto";
 
 import { generateSharedIndex } from "./controllers/shareController.js";
 import { ensureKeyPair } from "./controllers/keyController.js";
-import { registerUserKey, getUserKey } from "./controllers/userController.js";
+import { registerUserKey, getUserKey, listUsers } from "./controllers/userController.js";
 import { generateAESKey, encryptAESKeyForRecipient } from "./utils/cryptoUtils.js";
 import { initiatePeerDownload } from "./controllers/peerController.js";
 
@@ -16,6 +16,7 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 const downloadsDir = "./downloads";
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 const sharedFiles = new Map();
+
 async function rotateFileKey(fileHash, revokedUser, index, ws) {
   try {
     const fileEntry = index.find(f => f.hash === fileHash);
@@ -51,10 +52,10 @@ async function rotateFileKey(fileHash, revokedUser, index, ws) {
     }
     ws.send(
       JSON.stringify({
-        type: "rotateKey",
+        type: "updateFileKeys",
         fileHash,
-        newEncryptedKeys,
         newIV: newIV.toString("base64"),
+        newEncryptedKeys,
       })
     );
     fileMeta.allowedUserIDs = remainingUsers;
@@ -93,8 +94,33 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
 
     ws.on("open", () => {
       console.log(` Connected to hub as ${nickname}`);
-      ws.send(JSON.stringify({ type: "registerKey", from: nickname, publicKey: localPublicKeyPem }));
-      ws.send(JSON.stringify({ type: "fileIndex", from: nickname, files: index }));
+      console.log(` Registering public key...`);
+      
+      // Verify the key is in proper format before sending
+      if (!localPublicKeyPem || !localPublicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
+        console.error("✗ ERROR: Generated public key is invalid!");
+        console.error("  Key preview:", localPublicKeyPem?.substring(0, 50));
+        process.exit(1);
+      }
+      
+      const registerKeyMsg = { 
+        type: "registerKey", 
+        from: nickname, 
+        publicKey: localPublicKeyPem 
+      };
+      
+      console.log(`📤 Sending registerKey message (${JSON.stringify(registerKeyMsg).length} bytes)`);
+      ws.send(JSON.stringify(registerKeyMsg));
+      
+      const fileIndexMsg = { 
+        type: "fileIndex", 
+        from: nickname, 
+        files: index 
+      };
+      
+      console.log(`📤 Sending fileIndex message (${index.length} files)`);
+      ws.send(JSON.stringify(fileIndexMsg));
+      
       rl.setPrompt("> ");
       rl.prompt();
     });
@@ -112,20 +138,36 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       switch (msg.type) {
         case "system":
         case "keyAck":
+        case "info":
           console.log(`[Hub] ${msg.text}`);
+          break;
+
+        case "error":
+          console.log(`[Error] ${msg.text}`);
           break;
 
         case "userList":
           console.log("\n Connected Users:");
           msg.users?.forEach((u) => {
             console.log(` ID: ${u.id} | Nick: ${u.nickname}`);
-            if (u.publicKey) registerUserKey(u.nickname, u.publicKey);
+            if (u.publicKey) {
+              if (registerUserKey(u.nickname, u.publicKey)) {
+                console.log(`   ✓ Stored public key for ${u.nickname}`);
+              } else {
+                console.log(`   ✗ Failed to store key for ${u.nickname}`);
+              }
+            } else {
+              console.log(`   ⚠ No public key available for ${u.nickname}`);
+            }
           });
           break;
 
         case "userKey":
-          registerUserKey(msg.nickname, msg.publicKey);
-          console.log(` Received public key for ${msg.nickname}`);
+          if (registerUserKey(msg.nickname, msg.publicKey)) {
+            console.log(` ✓ Received and stored public key for ${msg.nickname}`);
+          } else {
+            console.log(` ✗ Failed to store public key for ${msg.nickname}`);
+          }
           break;
 
         case "fileShared":
@@ -160,15 +202,12 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
           msg.logs.forEach(log => {
             console.log(`[${log.timestamp}] ${log.acting_user_id} -> ${log.action_type} (${log.status})`);
           });
-          rl.prompt();
           break;
 
         case "chat":
         case "message":
           if (msg.text) console.log(`${msg.from || "Hub"}: ${msg.text}`);
-          else console.log(`[${msg.type}]`, msg);
           break;
-
 
         case "revocationConfirmed":
           console.log(` Revocation confirmed: ${msg.revokedUser} removed for ${msg.fileHash}`);
@@ -209,89 +248,133 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         return rl.prompt();
       }
 
+      if (msg === "!debug_keys") {
+        console.log("\n Local Key Storage:");
+        const users = listUsers();
+        if (users.length === 0) {
+          console.log("  (No keys stored locally)");
+        } else {
+          users.forEach(user => {
+            const key = getUserKey(user);
+            if (key) {
+              console.log(`  ✓ ${user}: ${key.substring(0, 50)}...`);
+            } else {
+              console.log(`  ✗ ${user}: Key retrieval failed`);
+            }
+          });
+        }
+        return rl.prompt();
+      }
+
       if (msg.startsWith("!share ")) {
-        const [, fileHash, recips] = msg.split(" ");
-        if (!fileHash || !recips) {
+        const parts = msg.split(" ");
+        if (parts.length < 3) {
           console.log("Usage: !share <fileHash> <recipient1,recipient2,...>");
           return rl.prompt();
         }
 
-        const recipients = recips.split(",");
+        const fileHash = parts[1];
+        const recips = parts[2];
+        const recipients = recips.split(",").map(r => r.trim());
+        
         const file = index.find((f) => f.hash === fileHash);
         if (!file) {
           console.log(" File not found in your index.");
           return rl.prompt();
         }
 
-        const { key: aesKey, iv } = generateAESKey();
-        const encryptedFilePath = path.join(downloadsDir, `${fileHash}.enc`);
+        // First request user list to ensure we have all public keys
+        ws.send(JSON.stringify({ type: "getUsers", from: nickname }));
 
-        const cipher = crypto.createCipheriv("aes-256-cbc", aesKey, iv);
-        fs.createReadStream(file.filePath)
-          .pipe(cipher)
-          .pipe(fs.createWriteStream(encryptedFilePath))
-          .on("finish", () => {
-            const encryptedKeys = {};
-            for (const r of recipients) {
-              const pubKeyPem = getUserKey(r);
-              if (pubKeyPem) {
-                encryptedKeys[r] = encryptAESKeyForRecipient(pubKeyPem, aesKey);
+        // Wait a bit for the user list response
+        setTimeout(() => {
+          const { key: aesKey, iv } = generateAESKey();
+          const encryptedFilePath = path.join(downloadsDir, `${fileHash}.enc`);
+
+          const cipher = crypto.createCipheriv("aes-256-cbc", aesKey, iv);
+          fs.createReadStream(file.filePath)
+            .pipe(cipher)
+            .pipe(fs.createWriteStream(encryptedFilePath))
+            .on("finish", () => {
+              const encryptedKeys = {};
+              let missingKeys = [];
+
+              for (const r of recipients) {
+                const pubKeyPem = getUserKey(r);
+                if (pubKeyPem) {
+                  try {
+                    encryptedKeys[r] = encryptAESKeyForRecipient(pubKeyPem, aesKey);
+                    console.log(`✓ Encrypted key for ${r}`);
+                  } catch (err) {
+                    console.error(`✗ Failed to encrypt for ${r}:`, err.message);
+                    missingKeys.push(r);
+                  }
+                } else {
+                  console.error(`✗ No public key found for ${r}`);
+                  missingKeys.push(r);
+                }
               }
-            }
 
-            ws.send(
-              JSON.stringify({
-                type: "shareEncryptedFile",
-                from: nickname,
-                fileHash,
-                fileName: file.fileName,
-                size: file.size,
-                recipients,
-                encryptedKeys,
-                iv: iv.toString("base64"),
-              })
-            );
+              if (missingKeys.length > 0) {
+                console.log(`⚠ Warning: Could not encrypt for: ${missingKeys.join(", ")}`);
+                console.log("   These users may need to reconnect or share their public key.");
+              }
 
-            // Save metadata for rotation tracking
-            sharedFiles.set(fileHash, {
-              allowedUserIDs: recipients,
-              filePath: file.filePath,
+              if (Object.keys(encryptedKeys).length === 0) {
+                console.log("✗ No valid recipients. File not shared.");
+                return rl.prompt();
+              }
+
+              // Fixed: Changed type to "shareFile" to match hub handler
+              ws.send(
+                JSON.stringify({
+                  type: "shareFile",
+                  from: nickname,
+                  fileHash,
+                  fileName: file.fileName,
+                  size: file.size,
+                  allowedUsers: Object.keys(encryptedKeys),
+                  encryptedKeys,
+                  iv: iv.toString("base64"),
+                })
+              );
+
+              // Save metadata for rotation tracking
+              sharedFiles.set(fileHash, {
+                allowedUserIDs: Object.keys(encryptedKeys),
+                filePath: file.filePath,
+              });
+
+              console.log(` File encrypted & shared: ${file.fileName}`);
+              rl.prompt();
+            })
+            .on("error", (err) => {
+              console.error("✗ Encryption failed:", err.message);
+              rl.prompt();
             });
+        }, 500); // Wait 500ms for user list response
 
-            console.log(` File encrypted & shared: ${file.fileName}`);
-            rl.prompt();
-          });
         return;
-      }
-      if (msg.text && !msg.text.startsWith("!")) {
-        broadcast(
-          connectedUsers,
-          JSON.stringify({
-            type: "chat",
-            from: currentUser,
-            text: msg.text,
-          })
-        );
-      }
-      if (msg.type === "chat" && msg.text) {
-        console.log(`> ${msg.from}: ${msg.text}`);
       }
 
       if (msg.startsWith("!view_log ")) {
-        const [, fileHash] = msg.split(" ");
+        const parts = msg.split(" ");
+        const fileHash = parts[1];
         ws.send(JSON.stringify({ type: "get_audit_log", fileHash }));
         return rl.prompt();
       }
 
-
       if (msg.startsWith("!request_keys ")) {
-        const [, fileHash] = msg.split(" ");
+        const parts = msg.split(" ");
+        const fileHash = parts[1];
         ws.send(JSON.stringify({ type: "getFileKey", from: nickname, fileHash }));
         return rl.prompt();
       }
 
       if (msg.startsWith("!download ")) {
-        const [, fileHash, uploader] = msg.split(" ");
+        const parts = msg.split(" ");
+        const fileHash = parts[1];
+        const uploader = parts[2];
         ws.send(
           JSON.stringify({ type: "requestDownloadToken", from: nickname, fileHash, uploader })
         );
@@ -299,13 +382,17 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       }
 
       if (msg.startsWith("!list ")) {
-        const [, targetNick] = msg.split(" ");
+        const parts = msg.split(" ");
+        const targetNick = parts[1];
         ws.send(JSON.stringify({ type: "listRequest", from: nickname, target: targetNick }));
         return rl.prompt();
       }
 
       if (msg.startsWith("!revoke")) {
-        const [, fileHash, targetUser] = msg.trim().split(" ");
+        const parts = msg.trim().split(" ");
+        const fileHash = parts[1];
+        const targetUser = parts[2];
+        
         if (!fileHash || !targetUser) {
           console.log("Usage: !revoke <fileHash> <targetUser>");
         } else {
@@ -317,7 +404,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
             })
           );
         }
-        return;
+        return rl.prompt();
       }
 
       // Normal chat
@@ -325,4 +412,4 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       rl.prompt();
     });
   });
-});
+}); 

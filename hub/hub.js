@@ -87,8 +87,66 @@ wss.on("connection", async (ws, req) => {
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
+      
+      // Debug: Log all incoming messages
+      console.log(`📩 ${currentUser}: ${msg.type}`);
+      
+      // Handle public key registration - MUST BE FIRST
+      if (msg.type === "registerKey") {
+        const { publicKey } = msg;
+        
+        console.log(`🔑 Attempting to register key for ${currentUser}`);
+        console.log(`   Key preview: ${publicKey?.substring(0, 60)}...`);
+        
+        if (!publicKey || !publicKey.includes('-----BEGIN PUBLIC KEY-----')) {
+          console.log(`⚠ Invalid public key received from ${currentUser}`);
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            text: "Invalid public key format." 
+          }));
+          return;
+        }
+
+        // Use INSERT OR REPLACE to ensure the row exists
+        await db.run(
+          `INSERT OR REPLACE INTO Users (nickname, public_key) VALUES (?, ?)`,
+          [currentUser, publicKey]
+        );
+
+        // Verify the update
+        const check = await db.get(`SELECT public_key FROM Users WHERE nickname = ?`, [currentUser]);
+        console.log(`   Verification: ${check?.public_key ? 'Key stored successfully' : 'FAILED to store key'}`);
+
+        // Broadcast the public key to all connected users
+        for (const [nick, userWs] of connectedUsers.entries()) {
+          if (nick !== currentUser && userWs.readyState === 1) {
+            userWs.send(JSON.stringify({
+              type: "userKey",
+              nickname: currentUser,
+              publicKey: publicKey
+            }));
+          }
+        }
+
+        ws.send(JSON.stringify({ 
+          type: "keyAck", 
+          text: "Public key registered successfully." 
+        }));
+        
+        console.log(`✓ Public key registered for ${currentUser}`);
+        return;
+      }
+
+      // Handle file index
+      if (msg.type === "fileIndex") {
+        console.log(`📁 ${currentUser} shared ${msg.files?.length || 0} files`);
+        // File index is just informational for now
+        return;
+      }
+      
+      // Handle file sharing
       if (msg.type === "shareFile") {
-        const { fileHash, fileName, iv, encryptedKeys, allowedUsers } = msg;
+        const { fileHash, fileName, size, iv, encryptedKeys, allowedUsers } = msg;
 
         await db.run(
           `INSERT OR REPLACE INTO Files (file_hash, owner, file_name, iv, encrypted_keys, allowed_users)
@@ -104,46 +162,28 @@ wss.on("connection", async (ws, req) => {
           details: { fileName, allowedUsers },
         });
 
-        ws.send(JSON.stringify({ type: "system", text: `File ${fileName} shared successfully.` }));
+        ws.send(JSON.stringify({ 
+          type: "info", 
+          text: `File ${fileName} shared successfully with ${allowedUsers.join(', ')}.` 
+        }));
+
+        // Notify recipients
+        for (const recipient of allowedUsers) {
+          const recipientWs = connectedUsers.get(recipient);
+          if (recipientWs && recipientWs.readyState === 1) {
+            recipientWs.send(JSON.stringify({
+              type: "fileShared",
+              from: currentUser,
+              fileName,
+              size,
+              fileHash,
+            }));
+          }
+        }
         return;
       }
 
-      if (msg.text && msg.text.startsWith("!share")) {
-        const [_, fileHash, ...allowedUsers] = msg.text.split(" ");
-        const allowedList = allowedUsers.join(",") || "";
-
-        // Check if file already exists
-        const existing = await db.get(`SELECT file_hash FROM Files WHERE file_hash = ?`, [fileHash]);
-        if (!existing) {
-          await db.run(
-            `INSERT INTO Files (file_hash, owner, file_name, iv, encrypted_keys, allowed_users)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              fileHash,
-              currentUser,
-              "Unknown", // Or pass actual filename if available
-              "iv_placeholder",
-              "encrypted_keys_placeholder",
-              allowedList
-            ]
-          );
-        }
-
-        // Log the event
-        await db.run(
-          `INSERT INTO AuditLog (acting_user_id, file_hash, action_type, status, details)
-     VALUES (?, ?, 'FILE_SHARED', 'SUCCESS', ?)`,
-          [currentUser, fileHash, JSON.stringify({ shared_with: allowedList })]
-        );
-
-        ws.send(JSON.stringify({
-          type: "info",
-          text: `File shared successfully and logged for ${fileHash}`
-        }));
-        return true;
-      }
-
-
+      // Handle download token requests
       if (msg.type === "requestDownloadToken") {
         const { fileHash, uploader } = msg;
 
@@ -186,7 +226,7 @@ wss.on("connection", async (ws, req) => {
             status: "DENIED",
             details: "Permission denied.",
           });
-          ws.send(JSON.stringify({ type: "error", text: "You don’t have permission." }));
+          ws.send(JSON.stringify({ type: "error", text: "You don't have permission." }));
           return;
         }
 
@@ -197,7 +237,12 @@ wss.on("connection", async (ws, req) => {
           expires: Date.now() + 5 * 60 * 1000,
         });
 
-        ws.send(JSON.stringify({ type: "downloadToken", token, fileHash, uploader }));
+        ws.send(JSON.stringify({ 
+          type: "downloadToken", 
+          token, 
+          fileHash, 
+          uploader: file.owner 
+        }));
 
         await logAudit({
           acting_user_id: currentUser,
@@ -208,7 +253,9 @@ wss.on("connection", async (ws, req) => {
         });
         return;
       }
-      if (msg.type === "!download_complete") {
+
+      // Handle download completion
+      if (msg.type === "download_complete") {
         const { fileHash } = msg;
         await logAudit({
           acting_user_id: currentUser,
@@ -222,8 +269,9 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
+      // Handle access revocation
       if (msg.type === "revokeAccess") {
-        const { fileHash, targetUser } = msg;
+        const { fileHash, targetUserID } = msg;
 
         const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
         if (!file || file.owner !== currentUser) {
@@ -233,7 +281,7 @@ wss.on("connection", async (ws, req) => {
 
         await db.run(
           `INSERT INTO Revocations (file_hash, revoked_user) VALUES (?, ?)`,
-          [fileHash, targetUser]
+          [fileHash, targetUserID]
         );
 
         await logAudit({
@@ -241,13 +289,19 @@ wss.on("connection", async (ws, req) => {
           file_hash: fileHash,
           action_type: "ACCESS_REVOKED",
           status: "SUCCESS",
-          details: { revoked_user_id: targetUser },
+          details: { revoked_user_id: targetUserID },
         });
 
-        ws.send(JSON.stringify({ type: "system", text: `Access revoked for ${targetUser}.` }));
+        ws.send(JSON.stringify({ 
+          type: "revocationConfirmed", 
+          text: `Access revoked for ${targetUserID}.`,
+          fileHash,
+          revokedUser: targetUserID
+        }));
         return;
       }
 
+      // Handle audit log requests
       if (msg.type === "get_audit_log") {
         const { fileHash } = msg;
 
@@ -264,7 +318,7 @@ wss.on("connection", async (ws, req) => {
 
         const logs = await db.all(
           `SELECT timestamp, acting_user_id, action_type, status, details 
-     FROM AuditLog WHERE file_hash = ? ORDER BY timestamp DESC`,
+           FROM AuditLog WHERE file_hash = ? ORDER BY timestamp DESC`,
           [fileHash]
         );
 
@@ -276,6 +330,7 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
+      // Handle key rotation
       if (msg.type === "updateFileKeys") {
         const { fileHash, newIV, newEncryptedKeys } = msg;
 
@@ -302,15 +357,116 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
+      // Handle get users request
+      if (msg.type === "getUsers") {
+        const users = [];
+        for (const [nickname, userWs] of connectedUsers.entries()) {
+          if (userWs.readyState === 1) {
+            const userInfo = await db.get(`SELECT public_key FROM Users WHERE nickname = ?`, [nickname]);
+            const pubKey = userInfo?.public_key;
+            
+            // Only include users with valid public keys
+            if (pubKey && pubKey !== "unknown" && pubKey.includes('-----BEGIN PUBLIC KEY-----')) {
+              users.push({
+                id: nickname,
+                nickname: nickname,
+                publicKey: pubKey
+              });
+            } else {
+              console.log(`⚠ User ${nickname} has no valid public key in database`);
+              users.push({
+                id: nickname,
+                nickname: nickname,
+                publicKey: null
+              });
+            }
+          }
+        }
+        ws.send(JSON.stringify({ type: "userList", users }));
+        return;
+      }
+
+      // Handle list files request
+      if (msg.type === "listRequest") {
+        const { target } = msg;
+        const files = await db.all(
+          `SELECT file_hash, file_name, allowed_users FROM Files WHERE owner = ?`,
+          [target]
+        );
+        
+        const fileList = files.map(f => ({
+          hash: f.file_hash,
+          fileName: f.file_name,
+          size: 0, // Size not stored in DB, would need to be added
+        }));
+
+        ws.send(JSON.stringify({ 
+          type: "fileList", 
+          owner: target,
+          files: fileList 
+        }));
+        return;
+      }
+
+      // Handle file key request
+      if (msg.type === "getFileKey") {
+        const { fileHash } = msg;
+        
+        const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
+        if (!file) {
+          ws.send(JSON.stringify({ type: "error", text: "File not found." }));
+          return;
+        }
+
+        const allowedUsers = JSON.parse(file.allowed_users || "[]");
+        if (!allowedUsers.includes(currentUser)) {
+          ws.send(JSON.stringify({ type: "error", text: "You don't have access to this file." }));
+          return;
+        }
+
+        const encryptedKeys = JSON.parse(file.encrypted_keys || "{}");
+        const userKey = encryptedKeys[currentUser];
+
+        if (!userKey) {
+          ws.send(JSON.stringify({ type: "error", text: "No key found for your user." }));
+          return;
+        }
+
+        ws.send(JSON.stringify({
+          type: "fileKey",
+          fileHash,
+          encryptedKey: userKey,
+          iv: file.iv
+        }));
+
+        await logAudit({
+          acting_user_id: currentUser,
+          file_hash: fileHash,
+          action_type: "KEY_RETRIEVED",
+          status: "SUCCESS",
+        });
+        return;
+      }
+
+      // Handle private messages and moderation
       if (handlePrivateMessage(connectedUsers, currentUser, ws, msg)) return;
       if (handleModeration(connectedUsers, currentUser, ws, msg)) return;
 
-      broadcast(
-        connectedUsers,
-        JSON.stringify({ type: "chat", from: currentUser, text: msg.text })
-      );
+      // Handle regular chat messages
+      if (msg.type === "message" && msg.text) {
+        broadcast(
+          connectedUsers,
+          JSON.stringify({ type: "chat", from: currentUser, text: msg.text })
+        );
+        return;
+      }
+
+      // Unknown message type
+      console.log(`Unknown message type from ${currentUser}:`, msg.type);
+      
     } catch (err) {
       console.error("Message error:", err.message);
+      ws.send(JSON.stringify({ type: "error", text: "Server error processing request." }));
     }
   });
 
