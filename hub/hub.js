@@ -189,6 +189,7 @@ wss.on("connection", async (ws, req) => {
 
       // Handle download token requests
       if (msg.type === "requestDownloadToken") {
+        console.log(`🎯 Processing download request from ${currentUser}`);
         const { fileHash, uploader } = msg;
 
         const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
@@ -241,12 +242,30 @@ wss.on("connection", async (ws, req) => {
           expires: Date.now() + 5 * 60 * 1000,
         });
 
+        // Send token to downloader
         ws.send(JSON.stringify({ 
           type: "downloadToken", 
           token, 
           fileHash, 
           uploader: file.owner 
         }));
+
+        // Notify the file owner (uploader) about the token
+        const uploaderWs = connectedUsers.get(file.owner);
+        console.log(`📤 Notifying uploader ${file.owner} about token for ${currentUser}`);
+        
+        if (uploaderWs && uploaderWs.readyState === 1) {
+          uploaderWs.send(JSON.stringify({
+            type: "downloadTokenIssued",
+            token,
+            fileHash,
+            downloader: currentUser,
+            expires: Date.now() + 5 * 60 * 1000,
+          }));
+          console.log(`   ✅ Token notification sent to ${file.owner}`);
+        } else {
+          console.log(`   ⚠ Cannot notify uploader - not connected or not ready`);
+        }
 
         await logAudit({
           acting_user_id: currentUser,
@@ -469,7 +488,7 @@ wss.on("connection", async (ws, req) => {
       console.log(`Unknown message type from ${currentUser}:`, msg.type);
       
     } catch (err) {
-      console.error("❌❌❌ Message error:", err.message);
+      console.error("❌ Message error:", err.message);
       console.error("Stack trace:", err.stack);
       ws.send(JSON.stringify({ type: "error", text: "Server error processing request." }));
     }
