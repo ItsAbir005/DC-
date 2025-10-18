@@ -53,6 +53,8 @@ wss.on("connection", async (ws, req) => {
   const token = params.get("token");
   let currentUser = null;
 
+  console.log("🔌 New connection attempt...");
+
   //  Authentication
   try {
     const decoded = jwt.verify(token, "secret123");
@@ -71,9 +73,9 @@ wss.on("connection", async (ws, req) => {
 
     connectedUsers.set(currentUser, ws);
     ws.send(JSON.stringify({ type: "system", text: `Welcome ${currentUser}!` }));
-    console.log(`${currentUser} connected`);
+    console.log(`✅ ${currentUser} connected and authenticated`);
   } catch (err) {
-    console.log("Invalid token attempt:", err.message);
+    console.log("❌ Invalid token attempt:", err.message);
     await logAudit({
       acting_user_id: "Unknown",
       action_type: "LOGIN_ATTEMPT",
@@ -84,13 +86,15 @@ wss.on("connection", async (ws, req) => {
     return;
   }
 
+  console.log(`🎧 Setting up message handler for ${currentUser}...`);
+
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
       
       // Debug: Log all incoming messages
       console.log(`📩 ${currentUser}: ${msg.type}`);
-      
+
       // Handle public key registration - MUST BE FIRST
       if (msg.type === "registerKey") {
         const { publicKey } = msg;
@@ -465,7 +469,8 @@ wss.on("connection", async (ws, req) => {
       console.log(`Unknown message type from ${currentUser}:`, msg.type);
       
     } catch (err) {
-      console.error("Message error:", err.message);
+      console.error("❌❌❌ Message error:", err.message);
+      console.error("Stack trace:", err.stack);
       ws.send(JSON.stringify({ type: "error", text: "Server error processing request." }));
     }
   });
