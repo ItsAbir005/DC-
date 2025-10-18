@@ -1,5 +1,5 @@
-// client/uploaderServer.js
-import WebSocket from "ws";
+// client/uploaderServer.js - ES Module version
+import { WebSocketServer } from "ws";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -17,7 +17,7 @@ export function startUploaderServer(port = 4000, activeTokens) {
     return uploaderServer;
   }
 
-  const wss = new WebSocket.Server({ port }, () => {
+  const wss = new WebSocketServer({ port }, () => {
     console.log(`🚀 Uploader peer server started on ws://localhost:${port}`);
   });
 

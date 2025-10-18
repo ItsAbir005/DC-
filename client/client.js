@@ -11,11 +11,13 @@ import { ensureKeyPair } from "./controllers/keyController.js";
 import { registerUserKey, getUserKey, listUsers } from "./controllers/userController.js";
 import { generateAESKey, encryptAESKeyForRecipient } from "./utils/cryptoUtils.js";
 import { initiatePeerDownload } from "./controllers/peerController.js";
+import { startUploaderServer, isUploaderServerRunning } from "./uploaderServer.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const downloadsDir = "./downloads";
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 const sharedFiles = new Map();
+const activeDownloadTokens = new Map(); // Store tokens received from hub
 
 async function rotateFileKey(fileHash, revokedUser, index, ws) {
   try {
@@ -92,35 +94,10 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
     const token = jwt.sign({ nickname }, "secret123", { expiresIn: "1h" });
     const ws = new WebSocket(`ws://localhost:8080/?token=${token}`);
 
+    let registrationSent = false;
+
     ws.on("open", () => {
       console.log(` Connected to hub as ${nickname}`);
-      console.log(` Registering public key...`);
-      
-      // Verify the key is in proper format before sending
-      if (!localPublicKeyPem || !localPublicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
-        console.error("✗ ERROR: Generated public key is invalid!");
-        console.error("  Key preview:", localPublicKeyPem?.substring(0, 50));
-        process.exit(1);
-      }
-      
-      const registerKeyMsg = { 
-        type: "registerKey", 
-        from: nickname, 
-        publicKey: localPublicKeyPem 
-      };
-      
-      console.log(`📤 Sending registerKey message (${JSON.stringify(registerKeyMsg).length} bytes)`);
-      ws.send(JSON.stringify(registerKeyMsg));
-      
-      const fileIndexMsg = { 
-        type: "fileIndex", 
-        from: nickname, 
-        files: index 
-      };
-      
-      console.log(`📤 Sending fileIndex message (${index.length} files)`);
-      ws.send(JSON.stringify(fileIndexMsg));
-      
       rl.setPrompt("> ");
       rl.prompt();
     });
@@ -135,9 +112,52 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
         return;
       }
 
+      // Debug: Log all incoming messages
+      if (msg.type !== "system" && msg.type !== "chat") {
+        console.log(`📨 Received: ${msg.type}`);
+      }
+
+      // Send registration after receiving welcome message
+      if (msg.type === "system" && msg.text.includes("Welcome") && !registrationSent) {
+        registrationSent = true;
+        console.log(` Registering public key...`);
+        
+        // Verify the key is in proper format before sending
+        if (!localPublicKeyPem || !localPublicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
+          console.error("✗ ERROR: Generated public key is invalid!");
+          console.error("  Key preview:", localPublicKeyPem?.substring(0, 50));
+          process.exit(1);
+        }
+        
+        const registerKeyMsg = { 
+          type: "registerKey", 
+          from: nickname, 
+          publicKey: localPublicKeyPem 
+        };
+        
+        console.log(`📤 Sending registerKey message (${JSON.stringify(registerKeyMsg).length} bytes)`);
+        ws.send(JSON.stringify(registerKeyMsg));
+        
+        const fileIndexMsg = { 
+          type: "fileIndex", 
+          from: nickname, 
+          files: index 
+        };
+        
+        console.log(`📤 Sending fileIndex message (${index.length} files)`);
+        ws.send(JSON.stringify(fileIndexMsg));
+      }
+
       switch (msg.type) {
         case "system":
+          console.log(`[Hub] ${msg.text}`);
+          break;
+
         case "keyAck":
+          console.log(`[Hub] ${msg.text}`);
+          console.log(`✓ Your public key has been registered with the hub`);
+          break;
+
         case "info":
           console.log(`[Hub] ${msg.text}`);
           break;
@@ -188,6 +208,7 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
 
         case "downloadToken":
           console.log(`\n Got download token for ${msg.fileHash}`);
+          
           initiatePeerDownload(
             msg.fileHash,
             msg.token,
@@ -195,6 +216,23 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
             msg.chunkHashes,
             downloadsDir
           );
+          break;
+
+        case "downloadTokenIssued":
+          console.log(`\n📥 Download token issued: ${msg.downloader} is downloading ${msg.fileHash.substring(0, 16)}...`);
+          
+          // Store the token so our uploader server can validate it
+          activeDownloadTokens.set(msg.token, {
+            user: msg.downloader,
+            fileHash: msg.fileHash,
+            expires: msg.expires,
+          });
+          
+          // Ensure uploader server is running
+          if (!isUploaderServerRunning()) {
+            console.log(` Starting uploader server...`);
+            startUploaderServer(4000, activeDownloadTokens);
+          }
           break;
 
         case "auditLog":
@@ -346,6 +384,13 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
               });
 
               console.log(` File encrypted & shared: ${file.fileName}`);
+              
+              // Start uploader server if not already running
+              if (!isUploaderServerRunning()) {
+                console.log(` Starting uploader server...`);
+                startUploaderServer(4000, activeDownloadTokens);
+              }
+              
               rl.prompt();
             })
             .on("error", (err) => {
@@ -412,4 +457,4 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       rl.prompt();
     });
   });
-}); 
+});
