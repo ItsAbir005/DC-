@@ -307,19 +307,24 @@ rl.question("Enter your nickname: ", (nicknameRaw) => {
       if (msg.startsWith("!share ")) {
         const parts = msg.split(" ");
         if (parts.length < 3) {
-          console.log("Usage: !share <fileHash> <recipient1,recipient2,...>");
+          console.log("Usage: !share <fileHash> <recipient1,recipient2,...> OR <recipient1> <recipient2> ...");
           return rl.prompt();
         }
 
         const fileHash = parts[1];
-        const recips = parts[2];
-        const recipients = recips.split(",").map(r => r.trim());
+        // Support both comma-separated and space-separated recipients
+        const recipientsStr = parts.slice(2).join(" ");
+        const recipients = recipientsStr.includes(",") 
+          ? recipientsStr.split(",").map(r => r.trim())
+          : parts.slice(2).map(r => r.trim());
         
         const file = index.find((f) => f.hash === fileHash);
         if (!file) {
           console.log(" File not found in your index.");
           return rl.prompt();
         }
+
+        console.log(`📤 Preparing to share with: ${recipients.join(", ")}`);
 
         // First request user list to ensure we have all public keys
         ws.send(JSON.stringify({ type: "getUsers", from: nickname }));
