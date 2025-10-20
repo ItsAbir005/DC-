@@ -1,12 +1,12 @@
 // client/controllers/shareController.js
-const fs = require("fs");
-const path = require("path");
-const { walkDirectory } = require("../middleware/fileScanner");
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { walkDirectory } from "../middleware/fileScanner.js";
 
 const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
 
 function hashBuffer(buf) {
-  const crypto = require("crypto");
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
@@ -31,7 +31,7 @@ function computeChunkHashes(filePath) {
   return { chunkHashes: hashes, chunkSize: CHUNK_SIZE, chunks: hashes.length, size: stats.size };
 }
 
-function generateSharedIndex(folderPath) {
+export function generateSharedIndex(folderPath) {
   if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
     throw new Error("Invalid folder path");
   }
@@ -71,5 +71,3 @@ function generateSharedIndex(folderPath) {
 
   return index;
 }
-
-module.exports = { generateSharedIndex };

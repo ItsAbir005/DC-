@@ -1,4 +1,4 @@
-// controllers/userController.js
+// client/controllers/userController.js
 import fs from "fs";
 import path from "path";
 
@@ -11,7 +11,6 @@ if (!fs.existsSync(USERS_FILE)) {
 
 export function registerUserKey(nickname, publicKeyPem) {
   try {
-    // Validate the public key format
     if (!publicKeyPem || typeof publicKeyPem !== 'string') {
       console.error(`Invalid public key for ${nickname}: not a string`);
       return false;

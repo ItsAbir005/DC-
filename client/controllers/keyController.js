@@ -1,4 +1,4 @@
-// controllers/keyController.js
+// client/controllers/keyController.js
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -41,8 +41,6 @@ export function ensureKeyPair() {
   fs.writeFileSync(PUBLIC_KEY_PATH, publicKey, "utf8");
 
   console.log("✓ Generated and saved new RSA key pair");
-  console.log(`  Private key: ${PRIVATE_KEY_PATH}`);
-  console.log(`  Public key: ${PUBLIC_KEY_PATH}`);
 
   return { privateKey, publicKey };
 }
