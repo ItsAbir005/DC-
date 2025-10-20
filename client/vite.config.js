@@ -1,7 +1,7 @@
 // client/vite.config.js
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite'
+import tailwindcss from '@tailwindcss/vite';
 import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
 
@@ -12,11 +12,21 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.js',
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+          },
+        },
       },
       {
         entry: 'electron/preload.js',
         onstart(options) {
           options.reload();
+        },
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+          },
         },
       },
     ]),
@@ -24,5 +34,8 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+  },
+  build: {
+    outDir: 'dist',
   },
 });

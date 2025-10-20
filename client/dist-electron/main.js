@@ -12,11 +12,13 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname$1, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false
     }
   });
-  if (process.env.NODE_ENV === "development") {
-    mainWindow.loadURL("http://localhost:5173");
+  const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
+  if (process.env.NODE_ENV !== "production") {
+    mainWindow.loadURL(VITE_DEV_SERVER_URL);
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname$1, "../dist/index.html"));
