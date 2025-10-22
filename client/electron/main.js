@@ -46,7 +46,7 @@ app.whenReady().then(() => {
   clientCore = new ClientCore(mainWindow);
 });
 
-// IPC Handlers
+// Connection Handlers
 ipcMain.handle('client:connect', async (event, { nickname, folderPath }) => {
   try {
     return await clientCore.connect(nickname, folderPath);
@@ -55,8 +55,22 @@ ipcMain.handle('client:connect', async (event, { nickname, folderPath }) => {
   }
 });
 
+ipcMain.handle('client:disconnect', async () => {
+  try {
+    clientCore.disconnect();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// File Handlers
 ipcMain.handle('client:getFiles', async () => {
   return clientCore.getFiles();
+});
+
+ipcMain.handle('client:getSharedWithMe', async () => {
+  return clientCore.getSharedWithMe();
 });
 
 ipcMain.handle('client:getUsers', async () => {
@@ -72,12 +86,52 @@ ipcMain.handle('client:shareFile', async (event, { fileHash, recipients }) => {
 });
 
 ipcMain.handle('client:revokeAccess', async (event, { fileHash, targetUser }) => {
-  return await clientCore.revokeAccess(fileHash, targetUser);
+  try {
+    return await clientCore.revokeAccess(fileHash, targetUser);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
-ipcMain.handle('client:disconnect', async () => {
-  clientCore.disconnect();
-  return { success: true };
+// Download Handlers
+ipcMain.handle('client:requestDownloadToken', async (event, { fileHash, uploader }) => {
+  try {
+    return await clientCore.requestDownloadToken(fileHash, uploader);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:startDownload', async (event, downloadInfo) => {
+  try {
+    return await clientCore.startDownload(downloadInfo);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:pauseDownload', async (event, { fileHash }) => {
+  try {
+    return await clientCore.pauseDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:resumeDownload', async (event, { fileHash }) => {
+  try {
+    return await clientCore.resumeDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:cancelDownload', async (event, { fileHash }) => {
+  try {
+    return await clientCore.cancelDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 app.on('window-all-closed', () => {

@@ -7898,12 +7898,27 @@ class ClientCore {
     this.mainWindow = mainWindow2;
     this.activeDownloadTokens = /* @__PURE__ */ new Map();
     this.sharedFiles = /* @__PURE__ */ new Map();
+    this.sharedWithMe = [];
+    this.activeDownloads = /* @__PURE__ */ new Map();
   }
   async connect(nickname, folderPath) {
     try {
       this.nickname = nickname;
       if (folderPath && fs.existsSync(folderPath)) {
         this.index = generateSharedIndex(folderPath);
+        this.index.forEach((file) => {
+          if (!this.sharedFiles.has(file.hash)) {
+            this.sharedFiles.set(file.hash, {
+              fileName: file.fileName,
+              filePath: file.filePath,
+              size: file.size,
+              sharedWith: [],
+              // Track who has access
+              encryptedKeys: {},
+              shareHistory: []
+            });
+          }
+        });
       }
       const { publicKey: localPublicKeyPem } = ensureKeyPair();
       const token = jwt.sign({ nickname }, "secret123", { expiresIn: "1h" });
@@ -7969,8 +7984,33 @@ class ClientCore {
           this.sendToRenderer("user-joined", { nickname: msg.nickname });
           this.ws.send(JSON.stringify({ type: "getUsers", from: this.nickname }));
           break;
+        case "userLeft":
+          this.sendToRenderer("user-left", { nickname: msg.nickname });
+          this.sharedFiles.forEach((fileInfo, fileHash) => {
+            const index = fileInfo.sharedWith.indexOf(msg.nickname);
+            if (index > -1) {
+              fileInfo.sharedWith.splice(index, 1);
+              this.updateFileIndex();
+            }
+          });
+          break;
         case "fileShared":
+          this.sharedWithMe.push({
+            fileHash: msg.fileHash,
+            fileName: msg.fileName,
+            size: msg.size,
+            uploader: msg.from,
+            encryptedKey: msg.encryptedKey,
+            iv: msg.iv,
+            sharedAt: Date.now()
+          });
           this.sendToRenderer("file-shared", msg);
+          break;
+        case "accessRevoked":
+          this.sharedWithMe = this.sharedWithMe.filter(
+            (f) => !(f.fileHash === msg.fileHash && f.uploader === msg.from)
+          );
+          this.sendToRenderer("access-revoked", msg);
           break;
         case "downloadTokenIssued":
           this.activeDownloadTokens.set(msg.token, {
@@ -7996,10 +8036,24 @@ class ClientCore {
     }
   }
   getFiles() {
-    return this.index;
+    return this.index.map((file) => {
+      const shareInfo = this.sharedFiles.get(file.hash);
+      return {
+        ...file,
+        sharedWith: shareInfo?.sharedWith || [],
+        encryptedKeys: shareInfo?.encryptedKeys || {},
+        shareHistory: shareInfo?.shareHistory || []
+      };
+    });
   }
   getUsers() {
     return this.users;
+  }
+  getSharedWithMe() {
+    return this.sharedWithMe;
+  }
+  updateFileIndex() {
+    this.sendToRenderer("file-list-update", this.getFiles());
   }
   async shareFile(fileHash, recipients) {
     try {
@@ -8033,10 +8087,21 @@ class ClientCore {
             encryptedKeys,
             iv: iv.toString("base64")
           }));
-          this.sharedFiles.set(fileHash, {
-            allowedUserIDs: Object.keys(encryptedKeys),
-            filePath: file.filePath
-          });
+          const shareInfo = this.sharedFiles.get(fileHash);
+          if (shareInfo) {
+            recipients.forEach((recipient) => {
+              if (!shareInfo.sharedWith.includes(recipient)) {
+                shareInfo.sharedWith.push(recipient);
+                shareInfo.shareHistory.push({
+                  user: recipient,
+                  action: "shared",
+                  timestamp: Date.now()
+                });
+              }
+            });
+            shareInfo.encryptedKeys = { ...shareInfo.encryptedKeys, ...encryptedKeys };
+          }
+          this.updateFileIndex();
           if (!isUploaderServerRunning()) {
             startUploaderServer(4e3, this.activeDownloadTokens);
           }
@@ -8053,15 +8118,236 @@ class ClientCore {
     try {
       this.ws.send(JSON.stringify({
         type: "revokeAccess",
+        from: this.nickname,
         fileHash,
         targetUserID: targetUser
       }));
+      const shareInfo = this.sharedFiles.get(fileHash);
+      if (shareInfo) {
+        const index = shareInfo.sharedWith.indexOf(targetUser);
+        if (index > -1) {
+          shareInfo.sharedWith.splice(index, 1);
+          shareInfo.shareHistory.push({
+            user: targetUser,
+            action: "revoked",
+            timestamp: Date.now()
+          });
+          delete shareInfo.encryptedKeys[targetUser];
+        }
+      }
+      this.updateFileIndex();
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
     }
   }
+  async requestDownloadToken(fileHash, uploader) {
+    try {
+      return new Promise((resolve, reject) => {
+        const tokenHandler = (data) => {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === "downloadToken" && msg.fileHash === fileHash) {
+            this.ws.off("message", tokenHandler);
+            if (msg.token) {
+              resolve({
+                success: true,
+                token: msg.token,
+                uploaderAddress: msg.uploaderIP,
+                uploaderPort: msg.uploaderPort || 4e3
+              });
+            } else {
+              reject({ success: false, error: msg.error || "Token request failed" });
+            }
+          }
+        };
+        this.ws.on("message", tokenHandler);
+        this.ws.send(JSON.stringify({
+          type: "requestDownloadToken",
+          fileHash,
+          uploader,
+          from: this.nickname
+        }));
+        setTimeout(() => {
+          this.ws.off("message", tokenHandler);
+          reject({ success: false, error: "Token request timeout" });
+        }, 1e4);
+      });
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+  async startDownload(downloadInfo) {
+    try {
+      const { fileHash, fileName, uploader, size, token, uploaderAddress } = downloadInfo;
+      const fileInfo = this.sharedWithMe.find((f) => f.fileHash === fileHash);
+      if (!fileInfo) {
+        return { success: false, error: "File info not found" };
+      }
+      const downloadDir = "./downloaded_files";
+      if (!fs.existsSync(downloadDir)) {
+        fs.mkdirSync(downloadDir, { recursive: true });
+      }
+      const outputPath = path.join(downloadDir, fileName);
+      const downloadState = {
+        fileHash,
+        fileName,
+        uploader,
+        size,
+        downloaded: 0,
+        progress: 0,
+        status: "downloading",
+        speed: 0,
+        startTime: Date.now(),
+        lastUpdate: Date.now(),
+        socket: null,
+        writeStream: null,
+        totalChunks: 0,
+        chunksReceived: 0
+      };
+      this.activeDownloads.set(fileHash, downloadState);
+      const socket = new require$$3.Socket();
+      downloadState.socket = socket;
+      socket.connect(4e3, uploaderAddress || "localhost", () => {
+        console.log(`📡 Connected to uploader: ${uploaderAddress}:4000`);
+        const request = JSON.stringify({
+          type: "downloadRequest",
+          token,
+          fileHash
+        }) + "\n";
+        socket.write(request);
+      });
+      let receivedData = Buffer.alloc(0);
+      let fileStream = null;
+      let lastProgressUpdate = Date.now();
+      socket.on("data", (chunk) => {
+        receivedData = Buffer.concat([receivedData, chunk]);
+        const newlineIndex = receivedData.indexOf("\n");
+        if (newlineIndex !== -1 && !fileStream) {
+          const headerJson = receivedData.slice(0, newlineIndex).toString();
+          const response = JSON.parse(headerJson);
+          if (response.status === "approved") {
+            console.log("✅ Download approved, receiving file...");
+            fileStream = fs.createWriteStream(outputPath);
+            downloadState.writeStream = fileStream;
+            const fileData = receivedData.slice(newlineIndex + 1);
+            if (fileData.length > 0) {
+              fileStream.write(fileData);
+              downloadState.downloaded += fileData.length;
+            }
+            receivedData = Buffer.alloc(0);
+          } else {
+            socket.destroy();
+            this.sendDownloadError(fileHash, response.error || "Download denied");
+            return;
+          }
+        } else if (fileStream) {
+          fileStream.write(receivedData);
+          downloadState.downloaded += receivedData.length;
+          receivedData = Buffer.alloc(0);
+          downloadState.progress = downloadState.downloaded / size * 100;
+          downloadState.chunksReceived++;
+          const now = Date.now();
+          if (now - lastProgressUpdate >= 500) {
+            const timeDiff = (now - downloadState.lastUpdate) / 1e3;
+            const bytesDiff = downloadState.downloaded - (downloadState.lastProgressedBytes || 0);
+            downloadState.speed = bytesDiff / timeDiff;
+            downloadState.lastUpdate = now;
+            downloadState.lastProgressedBytes = downloadState.downloaded;
+            lastProgressUpdate = now;
+            this.sendToRenderer("download-progress", {
+              fileHash,
+              fileName,
+              uploader,
+              downloaded: downloadState.downloaded,
+              total: size,
+              progress: downloadState.progress,
+              speed: downloadState.speed,
+              status: "downloading",
+              chunksReceived: downloadState.chunksReceived
+            });
+          }
+        }
+      });
+      socket.on("end", () => {
+        console.log("📥 Download completed");
+        if (fileStream) {
+          fileStream.end(() => {
+            downloadState.status = "completed";
+            downloadState.progress = 100;
+            this.sendToRenderer("download-complete", {
+              fileHash,
+              fileName,
+              outputPath
+            });
+            this.activeDownloads.delete(fileHash);
+          });
+        }
+      });
+      socket.on("error", (error) => {
+        console.error("❌ Download error:", error);
+        this.sendDownloadError(fileHash, error.message);
+        if (fileStream) {
+          fileStream.close();
+        }
+      });
+      return { success: true, fileHash };
+    } catch (error) {
+      console.error("Start download error:", error);
+      return { success: false, error: error.message };
+    }
+  }
+  sendDownloadError(fileHash, errorMessage) {
+    this.sendToRenderer("download-error", {
+      fileHash,
+      error: errorMessage
+    });
+    const downloadState = this.activeDownloads.get(fileHash);
+    if (downloadState) {
+      if (downloadState.socket) {
+        downloadState.socket.destroy();
+      }
+      if (downloadState.writeStream) {
+        downloadState.writeStream.close();
+      }
+      this.activeDownloads.delete(fileHash);
+    }
+  }
+  async pauseDownload(fileHash) {
+    const download = this.activeDownloads.get(fileHash);
+    if (download && download.socket) {
+      download.socket.pause();
+      download.status = "paused";
+      return { success: true };
+    }
+    return { success: false, error: "Download not found" };
+  }
+  async resumeDownload(fileHash) {
+    const download = this.activeDownloads.get(fileHash);
+    if (download && download.socket) {
+      download.socket.resume();
+      download.status = "downloading";
+      return { success: true };
+    }
+    return { success: false, error: "Download not found" };
+  }
+  async cancelDownload(fileHash) {
+    const download = this.activeDownloads.get(fileHash);
+    if (download) {
+      if (download.socket) {
+        download.socket.destroy();
+      }
+      if (download.writeStream) {
+        download.writeStream.close();
+      }
+      this.activeDownloads.delete(fileHash);
+      return { success: true };
+    }
+    return { success: false, error: "Download not found" };
+  }
   disconnect() {
+    for (const [fileHash] of this.activeDownloads) {
+      this.cancelDownload(fileHash);
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -8111,8 +8397,19 @@ electron.ipcMain.handle("client:connect", async (event, { nickname, folderPath }
     return { success: false, error: error.message };
   }
 });
+electron.ipcMain.handle("client:disconnect", async () => {
+  try {
+    clientCore.disconnect();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 electron.ipcMain.handle("client:getFiles", async () => {
   return clientCore.getFiles();
+});
+electron.ipcMain.handle("client:getSharedWithMe", async () => {
+  return clientCore.getSharedWithMe();
 });
 electron.ipcMain.handle("client:getUsers", async () => {
   return clientCore.getUsers();
@@ -8125,11 +8422,46 @@ electron.ipcMain.handle("client:shareFile", async (event, { fileHash, recipients
   }
 });
 electron.ipcMain.handle("client:revokeAccess", async (event, { fileHash, targetUser }) => {
-  return await clientCore.revokeAccess(fileHash, targetUser);
+  try {
+    return await clientCore.revokeAccess(fileHash, targetUser);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
-electron.ipcMain.handle("client:disconnect", async () => {
-  clientCore.disconnect();
-  return { success: true };
+electron.ipcMain.handle("client:requestDownloadToken", async (event, { fileHash, uploader }) => {
+  try {
+    return await clientCore.requestDownloadToken(fileHash, uploader);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:startDownload", async (event, downloadInfo) => {
+  try {
+    return await clientCore.startDownload(downloadInfo);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:pauseDownload", async (event, { fileHash }) => {
+  try {
+    return await clientCore.pauseDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:resumeDownload", async (event, { fileHash }) => {
+  try {
+    return await clientCore.resumeDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:cancelDownload", async (event, { fileHash }) => {
+  try {
+    return await clientCore.cancelDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 electron.app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
