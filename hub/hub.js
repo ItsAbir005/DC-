@@ -171,8 +171,8 @@ wss.on("connection", async (ws, req) => {
           type: "info",
           text: `File ${fileName} shared successfully with ${allowedUsers.join(', ')}.`
         }));
-
-        // Notify recipients - FIXED VERSION
+        console.log(`📦 encryptedKeys object:`, encryptedKeys);
+        console.log(`📦 Keys available:`, Object.keys(encryptedKeys));
         for (const recipient of allowedUsers) {
           const recipientWs = connectedUsers.get(recipient);
           if (recipientWs && recipientWs.readyState === 1) {
@@ -182,10 +182,10 @@ wss.on("connection", async (ws, req) => {
               fileName,
               size,
               fileHash,
-              encryptedKey: encryptedKeys[recipient], 
+              encryptedKey: encryptedKeys[recipient],
               iv: iv
             }));
-            console.log(`   ✅ Sent to ${recipient} with encryptedKey and iv`);
+            console.log(`✅ Sent to ${recipient} with encryptedKey and iv`);
           }
         }
         return;
