@@ -7889,10 +7889,14 @@ function startUploaderServer(port = 4e3, activeTokens) {
 function isUploaderServerRunning() {
   return uploaderServer !== null;
 }
+function getSettingsFile(nickname) {
+  return `./client_settings_${nickname}.json`;
+}
 class ClientCore {
   constructor(mainWindow2) {
     this.ws = null;
     this.nickname = null;
+    this.folderPath = null;
     this.index = [];
     this.users = [];
     this.mainWindow = mainWindow2;
@@ -7901,11 +7905,52 @@ class ClientCore {
     this.sharedWithMe = [];
     this.activeDownloads = /* @__PURE__ */ new Map();
   }
+  // Save settings to file
+  saveSettings() {
+    try {
+      if (!this.nickname) return;
+      const settingsFile = getSettingsFile(this.nickname);
+      const settings = {
+        folderPath: this.folderPath,
+        nickname: this.nickname
+      };
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+      console.log(`💾 Settings saved for ${this.nickname}:`, settings);
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+    }
+  }
+  // Load settings from file
+  loadSettings(nickname) {
+    try {
+      if (!nickname) return;
+      const settingsFile = getSettingsFile(nickname);
+      if (fs.existsSync(settingsFile)) {
+        const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+        this.folderPath = settings.folderPath;
+        console.log(`📂 Loaded saved folder path for ${nickname}:`, this.folderPath);
+      } else {
+        console.log(`📂 No saved settings for ${nickname}`);
+      }
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    }
+  }
   async connect(nickname, folderPath) {
     try {
       this.nickname = nickname;
+      this.loadSettings(nickname);
+      if (folderPath) {
+        this.folderPath = folderPath;
+        this.saveSettings();
+      } else if (this.folderPath) {
+        console.log(`📂 Using saved folder path for ${nickname}:`, this.folderPath);
+        folderPath = this.folderPath;
+      }
       if (folderPath && fs.existsSync(folderPath)) {
+        console.log("📁 Indexing files from:", folderPath);
         this.index = generateSharedIndex(folderPath);
+        console.log(`✅ Indexed ${this.index.length} files`);
         this.index.forEach((file) => {
           if (!this.sharedFiles.has(file.hash)) {
             this.sharedFiles.set(file.hash, {
@@ -7913,12 +7958,14 @@ class ClientCore {
               filePath: file.filePath,
               size: file.size,
               sharedWith: [],
-              // Track who has access
               encryptedKeys: {},
               shareHistory: []
             });
           }
         });
+      } else {
+        console.log("⚠️ No folder path provided or folder does not exist");
+        this.index = [];
       }
       const { publicKey: localPublicKeyPem } = ensureKeyPair();
       const token = jwt.sign({ nickname }, "secret123", { expiresIn: "1h" });
@@ -7934,6 +7981,7 @@ class ClientCore {
                 from: nickname,
                 publicKey: localPublicKeyPem
               }));
+              console.log(`📤 Sending file index: ${this.index.length} files`);
               this.ws.send(JSON.stringify({
                 type: "fileIndex",
                 from: nickname,
@@ -7944,7 +7992,7 @@ class ClientCore {
                 from: nickname
               }));
               this.ws.off("message", welcomeHandler);
-              resolve({ success: true, nickname });
+              resolve({ success: true, nickname, filesCount: this.index.length });
             }
           };
           this.ws.on("message", welcomeHandler);
@@ -7995,15 +8043,24 @@ class ClientCore {
           });
           break;
         case "fileShared":
-          this.sharedWithMe.push({
+          console.log("📥 Received file share:", msg.fileName, "from", msg.from);
+          const sharedFile = {
             fileHash: msg.fileHash,
             fileName: msg.fileName,
             size: msg.size,
             uploader: msg.from,
-            encryptedKey: msg.encryptedKey,
+            encryptedKey: msg.encryptedKeys?.[this.nickname],
+            // Get MY encrypted key
             iv: msg.iv,
             sharedAt: Date.now()
-          });
+          };
+          const exists = this.sharedWithMe.find(
+            (f) => f.fileHash === msg.fileHash && f.uploader === msg.from
+          );
+          if (!exists) {
+            this.sharedWithMe.push(sharedFile);
+            console.log("✅ File added to sharedWithMe:", sharedFile);
+          }
           this.sendToRenderer("file-shared", msg);
           break;
         case "accessRevoked":
@@ -8023,6 +8080,7 @@ class ClientCore {
           }
           break;
         case "downloadToken":
+          console.log("🎫 Received download token:", msg);
           this.sendToRenderer("download-token", msg);
           break;
       }
@@ -8050,6 +8108,7 @@ class ClientCore {
     return this.users;
   }
   getSharedWithMe() {
+    console.log("📋 Getting sharedWithMe:", this.sharedWithMe.length, "files");
     return this.sharedWithMe;
   }
   updateFileIndex() {
@@ -8143,16 +8202,18 @@ class ClientCore {
   }
   async requestDownloadToken(fileHash, uploader) {
     try {
+      console.log("🎫 Requesting download token for:", fileHash, "from:", uploader);
       return new Promise((resolve, reject) => {
         const tokenHandler = (data) => {
           const msg = JSON.parse(data.toString());
           if (msg.type === "downloadToken" && msg.fileHash === fileHash) {
             this.ws.off("message", tokenHandler);
+            console.log("✅ Token received:", msg);
             if (msg.token) {
               resolve({
                 success: true,
                 token: msg.token,
-                uploaderAddress: msg.uploaderIP,
+                uploaderAddress: msg.uploaderIP || "localhost",
                 uploaderPort: msg.uploaderPort || 4e3
               });
             } else {
@@ -8179,8 +8240,15 @@ class ClientCore {
   async startDownload(downloadInfo) {
     try {
       const { fileHash, fileName, uploader, size, token, uploaderAddress } = downloadInfo;
+      console.log("🚀 Starting download:", {
+        fileName,
+        uploader,
+        size,
+        token: token?.substring(0, 20) + "..."
+      });
       const fileInfo = this.sharedWithMe.find((f) => f.fileHash === fileHash);
       if (!fileInfo) {
+        console.error("❌ File info not found in sharedWithMe");
         return { success: false, error: "File info not found" };
       }
       const downloadDir = "./downloaded_files";
@@ -8199,12 +8267,24 @@ class ClientCore {
         speed: 0,
         startTime: Date.now(),
         lastUpdate: Date.now(),
+        lastProgressedBytes: 0,
         socket: null,
         writeStream: null,
         totalChunks: 0,
         chunksReceived: 0
       };
       this.activeDownloads.set(fileHash, downloadState);
+      this.sendToRenderer("download-progress", {
+        fileHash,
+        fileName,
+        uploader,
+        downloaded: 0,
+        total: size,
+        progress: 0,
+        speed: 0,
+        status: "downloading",
+        chunksReceived: 0
+      });
       const socket = new require$$3.Socket();
       downloadState.socket = socket;
       socket.connect(4e3, uploaderAddress || "localhost", () => {
@@ -8244,16 +8324,17 @@ class ClientCore {
           fileStream.write(receivedData);
           downloadState.downloaded += receivedData.length;
           receivedData = Buffer.alloc(0);
-          downloadState.progress = downloadState.downloaded / size * 100;
+          downloadState.progress = Math.min(99, downloadState.downloaded / size * 100);
           downloadState.chunksReceived++;
           const now = Date.now();
           if (now - lastProgressUpdate >= 500) {
             const timeDiff = (now - downloadState.lastUpdate) / 1e3;
-            const bytesDiff = downloadState.downloaded - (downloadState.lastProgressedBytes || 0);
+            const bytesDiff = downloadState.downloaded - downloadState.lastProgressedBytes;
             downloadState.speed = bytesDiff / timeDiff;
             downloadState.lastUpdate = now;
             downloadState.lastProgressedBytes = downloadState.downloaded;
             lastProgressUpdate = now;
+            console.log(`📊 Progress: ${downloadState.progress.toFixed(1)}% | ${downloadState.speed.toFixed(0)} B/s`);
             this.sendToRenderer("download-progress", {
               fileHash,
               fileName,

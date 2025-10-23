@@ -5,6 +5,7 @@ import SharedByMe from './SharedByMe';
 import SharedWithMe from './SharedWithMe';
 import ShareModal from './ShareModal';
 import DownloadManager from './DownloadManager';
+import DebugPanel from './DebugPanel';
 
 export default function MainLayout({ nickname }) {
   const [users, setUsers] = useState([]);

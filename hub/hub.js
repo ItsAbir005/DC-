@@ -91,22 +91,22 @@ wss.on("connection", async (ws, req) => {
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      
+
       // Debug: Log all incoming messages
       console.log(`📩 ${currentUser}: ${msg.type}`);
 
       // Handle public key registration - MUST BE FIRST
       if (msg.type === "registerKey") {
         const { publicKey } = msg;
-        
+
         console.log(`🔑 Attempting to register key for ${currentUser}`);
         console.log(`   Key preview: ${publicKey?.substring(0, 60)}...`);
-        
+
         if (!publicKey || !publicKey.includes('-----BEGIN PUBLIC KEY-----')) {
           console.log(`⚠ Invalid public key received from ${currentUser}`);
-          ws.send(JSON.stringify({ 
-            type: "error", 
-            text: "Invalid public key format." 
+          ws.send(JSON.stringify({
+            type: "error",
+            text: "Invalid public key format."
           }));
           return;
         }
@@ -132,11 +132,11 @@ wss.on("connection", async (ws, req) => {
           }
         }
 
-        ws.send(JSON.stringify({ 
-          type: "keyAck", 
-          text: "Public key registered successfully." 
+        ws.send(JSON.stringify({
+          type: "keyAck",
+          text: "Public key registered successfully."
         }));
-        
+
         console.log(`✓ Public key registered for ${currentUser}`);
         return;
       }
@@ -147,14 +147,15 @@ wss.on("connection", async (ws, req) => {
         // File index is just informational for now
         return;
       }
-      
+
+      // Handle file sharing
       // Handle file sharing
       if (msg.type === "shareFile") {
         const { fileHash, fileName, size, iv, encryptedKeys, allowedUsers } = msg;
 
         await db.run(
           `INSERT OR REPLACE INTO Files (file_hash, owner, file_name, iv, encrypted_keys, allowed_users)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?)`,
           [fileHash, currentUser, fileName, iv, JSON.stringify(encryptedKeys), JSON.stringify(allowedUsers)]
         );
 
@@ -166,12 +167,12 @@ wss.on("connection", async (ws, req) => {
           details: { fileName, allowedUsers },
         });
 
-        ws.send(JSON.stringify({ 
-          type: "info", 
-          text: `File ${fileName} shared successfully with ${allowedUsers.join(', ')}.` 
+        ws.send(JSON.stringify({
+          type: "info",
+          text: `File ${fileName} shared successfully with ${allowedUsers.join(', ')}.`
         }));
 
-        // Notify recipients
+        // Notify recipients - FIXED VERSION
         for (const recipient of allowedUsers) {
           const recipientWs = connectedUsers.get(recipient);
           if (recipientWs && recipientWs.readyState === 1) {
@@ -181,7 +182,10 @@ wss.on("connection", async (ws, req) => {
               fileName,
               size,
               fileHash,
+              encryptedKey: encryptedKeys[recipient], 
+              iv: iv
             }));
+            console.log(`   ✅ Sent to ${recipient} with encryptedKey and iv`);
           }
         }
         return;
@@ -243,17 +247,17 @@ wss.on("connection", async (ws, req) => {
         });
 
         // Send token to downloader
-        ws.send(JSON.stringify({ 
-          type: "downloadToken", 
-          token, 
-          fileHash, 
-          uploader: file.owner 
+        ws.send(JSON.stringify({
+          type: "downloadToken",
+          token,
+          fileHash,
+          uploader: file.owner
         }));
 
         // Notify the file owner (uploader) about the token
         const uploaderWs = connectedUsers.get(file.owner);
         console.log(`📤 Notifying uploader ${file.owner} about token for ${currentUser}`);
-        
+
         if (uploaderWs && uploaderWs.readyState === 1) {
           uploaderWs.send(JSON.stringify({
             type: "downloadTokenIssued",
@@ -315,8 +319,8 @@ wss.on("connection", async (ws, req) => {
           details: { revoked_user_id: targetUserID },
         });
 
-        ws.send(JSON.stringify({ 
-          type: "revocationConfirmed", 
+        ws.send(JSON.stringify({
+          type: "revocationConfirmed",
           text: `Access revoked for ${targetUserID}.`,
           fileHash,
           revokedUser: targetUserID
@@ -387,7 +391,7 @@ wss.on("connection", async (ws, req) => {
           if (userWs.readyState === 1) {
             const userInfo = await db.get(`SELECT public_key FROM Users WHERE nickname = ?`, [nickname]);
             const pubKey = userInfo?.public_key;
-            
+
             // Only include users with valid public keys
             if (pubKey && pubKey !== "unknown" && pubKey.includes('-----BEGIN PUBLIC KEY-----')) {
               users.push({
@@ -416,17 +420,17 @@ wss.on("connection", async (ws, req) => {
           `SELECT file_hash, file_name, allowed_users FROM Files WHERE owner = ?`,
           [target]
         );
-        
+
         const fileList = files.map(f => ({
           hash: f.file_hash,
           fileName: f.file_name,
           size: 0, // Size not stored in DB, would need to be added
         }));
 
-        ws.send(JSON.stringify({ 
-          type: "fileList", 
+        ws.send(JSON.stringify({
+          type: "fileList",
           owner: target,
-          files: fileList 
+          files: fileList
         }));
         return;
       }
@@ -434,7 +438,7 @@ wss.on("connection", async (ws, req) => {
       // Handle file key request
       if (msg.type === "getFileKey") {
         const { fileHash } = msg;
-        
+
         const file = await db.get(`SELECT * FROM Files WHERE file_hash = ?`, [fileHash]);
         if (!file) {
           ws.send(JSON.stringify({ type: "error", text: "File not found." }));
@@ -486,7 +490,7 @@ wss.on("connection", async (ws, req) => {
 
       // Unknown message type
       console.log(`Unknown message type from ${currentUser}:`, msg.type);
-      
+
     } catch (err) {
       console.error("❌ Message error:", err.message);
       console.error("Stack trace:", err.stack);
