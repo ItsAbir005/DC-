@@ -70,10 +70,10 @@ export class ClientCore {
   async connect(nickname, folderPath) {
     try {
       this.nickname = nickname;
-      this.loadSettings(nickname); 
+      this.loadSettings(nickname);
       if (folderPath) {
         this.folderPath = folderPath;
-        this.saveSettings(); 
+        this.saveSettings();
       } else if (this.folderPath) {
         console.log(`📂 Using saved folder path for ${nickname}:`, this.folderPath);
         folderPath = this.folderPath;
@@ -205,6 +205,7 @@ export class ClientCore {
 
         case 'fileShared':
           console.log('📥 Received file share:', msg.fileName, 'from', msg.from);
+          console.log('📦 Full message:', JSON.stringify(msg, null, 2)); 
 
           // Store file info for downloads
           const sharedFile = {
@@ -212,8 +213,7 @@ export class ClientCore {
             fileName: msg.fileName,
             size: msg.size,
             uploader: msg.from,
-            encryptedKey: msg.encryptedKeys?.[this.nickname], // Get MY encrypted key
-            iv: msg.iv,
+            encryptedKey: msg.encryptedKey, 
             sharedAt: Date.now(),
           };
 

@@ -8044,14 +8044,13 @@ class ClientCore {
           break;
         case "fileShared":
           console.log("📥 Received file share:", msg.fileName, "from", msg.from);
+          console.log("📦 Full message:", JSON.stringify(msg, null, 2));
           const sharedFile = {
             fileHash: msg.fileHash,
             fileName: msg.fileName,
             size: msg.size,
             uploader: msg.from,
-            encryptedKey: msg.encryptedKeys?.[this.nickname],
-            // Get MY encrypted key
-            iv: msg.iv,
+            encryptedKey: msg.encryptedKey,
             sharedAt: Date.now()
           };
           const exists = this.sharedWithMe.find(
