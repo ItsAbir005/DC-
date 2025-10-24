@@ -565,21 +565,68 @@ export class ClientCore {
             });
           }
           else if (msg.type === 'fileComplete') {
-            console.log('📥 Download completed');
+            console.log('📥 Download completed - starting decryption...');
 
             if (fileStream) {
-              fileStream.end(() => {
-                downloadState.status = 'completed';
-                downloadState.progress = 100;
+              fileStream.end(async () => {
+                try {
+                  // DECRYPT THE FILE
+                  const encryptedPath = outputPath;
+                  const decryptedPath = outputPath.replace('.pdf', '_decrypted.pdf'); // Temp name
 
-                this.sendToRenderer('download-complete', {
-                  fileHash,
-                  fileName,
-                  outputPath,
-                });
+                  // Get decryption key
+                  const fileInfo = this.sharedWithMe.find(f => f.fileHash === fileHash);
+                  if (!fileInfo || !fileInfo.encryptedKey) {
+                    throw new Error('No encryption key found');
+                  }
 
-                this.activeDownloads.delete(fileHash);
-                ws.close();
+                  // Decrypt the AES key using our private key
+                  const { privateKey } = ensureKeyPair();
+                  const crypto = await import('crypto');
+
+                  const decryptedAESKey = crypto.privateDecrypt(
+                    {
+                      key: privateKey,
+                      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING
+                    },
+                    Buffer.from(fileInfo.encryptedKey, 'base64')
+                  );
+
+                  const iv = Buffer.from(fileInfo.iv, 'base64');
+
+                  // Decrypt the file
+                  const decipher = crypto.createDecipheriv('aes-256-cbc', decryptedAESKey, iv);
+                  const encryptedData = fs.readFileSync(encryptedPath);
+                  const decryptedData = Buffer.concat([
+                    decipher.update(encryptedData),
+                    decipher.final()
+                  ]);
+
+                  // Write decrypted file
+                  fs.writeFileSync(decryptedPath, decryptedData);
+
+                  // Delete encrypted file and rename decrypted
+                  fs.unlinkSync(encryptedPath);
+                  fs.renameSync(decryptedPath, outputPath);
+
+                  console.log('✅ File decrypted successfully');
+
+                  downloadState.status = 'completed';
+                  downloadState.progress = 100;
+
+                  this.sendToRenderer('download-complete', {
+                    fileHash,
+                    fileName,
+                    outputPath,
+                  });
+
+                  this.activeDownloads.delete(fileHash);
+                  ws.close();
+                } catch (error) {
+                  console.error('❌ Decryption failed:', error);
+                  this.sendDownloadError(fileHash, 'Decryption failed: ' + error.message);
+                  ws.close();
+                }
               });
             }
           }

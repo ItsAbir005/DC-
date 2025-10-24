@@ -1,4 +1,26 @@
 "use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 const electron = require("electron");
 const path = require("path");
 const require$$7 = require("url");
@@ -3682,7 +3704,7 @@ var hasRequiredSafeBuffer;
 function requireSafeBuffer() {
   if (hasRequiredSafeBuffer) return safeBuffer.exports;
   hasRequiredSafeBuffer = 1;
-  (function(module, exports) {
+  (function(module2, exports) {
     var buffer = require$$0$1;
     var Buffer2 = buffer.Buffer;
     function copyProps(src, dst) {
@@ -3691,7 +3713,7 @@ function requireSafeBuffer() {
       }
     }
     if (Buffer2.from && Buffer2.alloc && Buffer2.allocUnsafe && Buffer2.allocUnsafeSlow) {
-      module.exports = buffer;
+      module2.exports = buffer;
     } else {
       copyProps(buffer, exports);
       exports.Buffer = SafeBuffer;
@@ -4704,14 +4726,14 @@ var hasRequiredRe;
 function requireRe() {
   if (hasRequiredRe) return re.exports;
   hasRequiredRe = 1;
-  (function(module, exports) {
+  (function(module2, exports) {
     const {
       MAX_SAFE_COMPONENT_LENGTH,
       MAX_SAFE_BUILD_LENGTH,
       MAX_LENGTH
     } = requireConstants();
     const debug = requireDebug();
-    exports = module.exports = {};
+    exports = module2.exports = {};
     const re2 = exports.re = [];
     const safeRe = exports.safeRe = [];
     const src = exports.src = [];
@@ -8338,18 +8360,50 @@ class ClientCore {
               totalChunks: msg.total
             });
           } else if (msg.type === "fileComplete") {
-            console.log("📥 Download completed");
+            console.log("📥 Download completed - starting decryption...");
             if (fileStream) {
-              fileStream.end(() => {
-                downloadState.status = "completed";
-                downloadState.progress = 100;
-                this.sendToRenderer("download-complete", {
-                  fileHash,
-                  fileName,
-                  outputPath
-                });
-                this.activeDownloads.delete(fileHash);
-                ws.close();
+              fileStream.end(async () => {
+                try {
+                  const encryptedPath = outputPath;
+                  const decryptedPath = outputPath.replace(".pdf", "_decrypted.pdf");
+                  const fileInfo2 = this.sharedWithMe.find((f) => f.fileHash === fileHash);
+                  if (!fileInfo2 || !fileInfo2.encryptedKey) {
+                    throw new Error("No encryption key found");
+                  }
+                  const { privateKey } = ensureKeyPair();
+                  const crypto2 = await import("crypto");
+                  const decryptedAESKey = crypto2.privateDecrypt(
+                    {
+                      key: privateKey,
+                      padding: crypto2.constants.RSA_PKCS1_OAEP_PADDING
+                    },
+                    Buffer.from(fileInfo2.encryptedKey, "base64")
+                  );
+                  const iv = Buffer.from(fileInfo2.iv, "base64");
+                  const decipher = crypto2.createDecipheriv("aes-256-cbc", decryptedAESKey, iv);
+                  const encryptedData = fs.readFileSync(encryptedPath);
+                  const decryptedData = Buffer.concat([
+                    decipher.update(encryptedData),
+                    decipher.final()
+                  ]);
+                  fs.writeFileSync(decryptedPath, decryptedData);
+                  fs.unlinkSync(encryptedPath);
+                  fs.renameSync(decryptedPath, outputPath);
+                  console.log("✅ File decrypted successfully");
+                  downloadState.status = "completed";
+                  downloadState.progress = 100;
+                  this.sendToRenderer("download-complete", {
+                    fileHash,
+                    fileName,
+                    outputPath
+                  });
+                  this.activeDownloads.delete(fileHash);
+                  ws.close();
+                } catch (error) {
+                  console.error("❌ Decryption failed:", error);
+                  this.sendDownloadError(fileHash, "Decryption failed: " + error.message);
+                  ws.close();
+                }
               });
             }
           } else if (msg.type === "error") {
