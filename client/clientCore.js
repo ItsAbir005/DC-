@@ -205,7 +205,7 @@ export class ClientCore {
 
         case 'fileShared':
           console.log('📥 Received file share:', msg.fileName, 'from', msg.from);
-          console.log('📦 Full message:', JSON.stringify(msg, null, 2)); 
+          console.log('📦 Full message:', JSON.stringify(msg, null, 2));
 
           // Store file info for downloads
           const sharedFile = {
@@ -213,7 +213,7 @@ export class ClientCore {
             fileName: msg.fileName,
             size: msg.size,
             uploader: msg.from,
-            encryptedKey: msg.encryptedKey, 
+            encryptedKey: msg.encryptedKey,
             sharedAt: Date.now(),
           };
 
@@ -438,7 +438,6 @@ export class ClientCore {
       return { success: false, error: error.message };
     }
   }
-
   async startDownload(downloadInfo) {
     try {
       const { fileHash, fileName, uploader, size, token, uploaderAddress } = downloadInfo;
@@ -475,7 +474,7 @@ export class ClientCore {
         startTime: Date.now(),
         lastUpdate: Date.now(),
         lastProgressedBytes: 0,
-        socket: null,
+        ws: null,
         writeStream: null,
         totalChunks: 0,
         chunksReceived: 0,
@@ -496,111 +495,118 @@ export class ClientCore {
         chunksReceived: 0,
       });
 
-      const socket = new net.Socket();
-      downloadState.socket = socket;
+      // Connect using WebSocket
+      const ws = new WebSocket(`ws://${uploaderAddress || 'localhost'}:4000`);
+      downloadState.ws = ws;
 
-      socket.connect(4000, uploaderAddress || 'localhost', () => {
+      ws.on('open', () => {
         console.log(`📡 Connected to uploader: ${uploaderAddress}:4000`);
 
-        const request = JSON.stringify({
+        // Send download request
+        ws.send(JSON.stringify({
           type: 'downloadRequest',
           token,
           fileHash,
-        }) + '\n';
-
-        socket.write(request);
+          stream: true,
+          autoStream: true
+        }));
       });
 
-      let receivedData = Buffer.alloc(0);
       let fileStream = null;
       let lastProgressUpdate = Date.now();
+      let metadataReceived = false;
 
-      socket.on('data', (chunk) => {
-        receivedData = Buffer.concat([receivedData, chunk]);
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
 
-        const newlineIndex = receivedData.indexOf('\n');
-        if (newlineIndex !== -1 && !fileStream) {
-          const headerJson = receivedData.slice(0, newlineIndex).toString();
-          const response = JSON.parse(headerJson);
-
-          if (response.status === 'approved') {
-            console.log('✅ Download approved, receiving file...');
-
+          if (msg.type === 'fileMetadata') {
+            console.log('✅ Metadata received:', msg);
+            metadataReceived = true;
+            downloadState.totalChunks = msg.totalChunks;
             fileStream = fs.createWriteStream(outputPath);
             downloadState.writeStream = fileStream;
-
-            const fileData = receivedData.slice(newlineIndex + 1);
-            if (fileData.length > 0) {
-              fileStream.write(fileData);
-              downloadState.downloaded += fileData.length;
+          }
+          else if (msg.type === 'fileChunk') {
+            if (!fileStream) {
+              console.error('❌ Received chunk before metadata');
+              return;
             }
 
-            receivedData = Buffer.alloc(0);
-          } else {
-            socket.destroy();
-            this.sendDownloadError(fileHash, response.error || 'Download denied');
-            return;
+            // Decode base64 chunk
+            const chunkBuffer = Buffer.from(msg.chunk, 'base64');
+            fileStream.write(chunkBuffer);
+
+            downloadState.downloaded += chunkBuffer.length;
+            downloadState.chunksReceived = msg.current + 1;
+            downloadState.progress = Math.min(99, (downloadState.downloaded / size) * 100);
+
+            const now = Date.now();
+            if (now - lastProgressUpdate >= 500) {
+              const timeDiff = (now - downloadState.lastUpdate) / 1000;
+              const bytesDiff = downloadState.downloaded - downloadState.lastProgressedBytes;
+              downloadState.speed = bytesDiff / timeDiff;
+              downloadState.lastUpdate = now;
+              downloadState.lastProgressedBytes = downloadState.downloaded;
+              lastProgressUpdate = now;
+
+              console.log(`📊 Progress: ${downloadState.progress.toFixed(1)}% | ${downloadState.speed.toFixed(0)} B/s`);
+
+              this.sendToRenderer('download-progress', {
+                fileHash,
+                fileName,
+                uploader,
+                downloaded: downloadState.downloaded,
+                total: size,
+                progress: downloadState.progress,
+                speed: downloadState.speed,
+                status: 'downloading',
+                chunksReceived: downloadState.chunksReceived,
+              });
+            }
           }
-        } else if (fileStream) {
-          fileStream.write(receivedData);
-          downloadState.downloaded += receivedData.length;
-          receivedData = Buffer.alloc(0);
+          else if (msg.type === 'fileComplete') {
+            console.log('📥 Download completed');
 
-          downloadState.progress = Math.min(99, (downloadState.downloaded / size) * 100);
-          downloadState.chunksReceived++;
+            if (fileStream) {
+              fileStream.end(() => {
+                downloadState.status = 'completed';
+                downloadState.progress = 100;
 
-          const now = Date.now();
-          if (now - lastProgressUpdate >= 500) {
-            const timeDiff = (now - downloadState.lastUpdate) / 1000;
-            const bytesDiff = downloadState.downloaded - downloadState.lastProgressedBytes;
-            downloadState.speed = bytesDiff / timeDiff;
-            downloadState.lastUpdate = now;
-            downloadState.lastProgressedBytes = downloadState.downloaded;
-            lastProgressUpdate = now;
+                this.sendToRenderer('download-complete', {
+                  fileHash,
+                  fileName,
+                  outputPath,
+                });
 
-            console.log(`📊 Progress: ${downloadState.progress.toFixed(1)}% | ${downloadState.speed.toFixed(0)} B/s`);
-
-            this.sendToRenderer('download-progress', {
-              fileHash,
-              fileName,
-              uploader,
-              downloaded: downloadState.downloaded,
-              total: size,
-              progress: downloadState.progress,
-              speed: downloadState.speed,
-              status: 'downloading',
-              chunksReceived: downloadState.chunksReceived,
-            });
+                this.activeDownloads.delete(fileHash);
+                ws.close();
+              });
+            }
           }
+          else if (msg.type === 'error') {
+            console.error('❌ Server error:', msg.text);
+            this.sendDownloadError(fileHash, msg.text);
+            if (fileStream) fileStream.close();
+            ws.close();
+          }
+        } catch (error) {
+          console.error('❌ Error processing message:', error);
         }
       });
 
-      socket.on('end', () => {
-        console.log('📥 Download completed');
-
-        if (fileStream) {
-          fileStream.end(() => {
-            downloadState.status = 'completed';
-            downloadState.progress = 100;
-
-            this.sendToRenderer('download-complete', {
-              fileHash,
-              fileName,
-              outputPath,
-            });
-
-            this.activeDownloads.delete(fileHash);
-          });
+      ws.on('close', () => {
+        console.log('🔌 WebSocket closed');
+        if (downloadState.progress < 100) {
+          this.sendDownloadError(fileHash, 'Connection closed');
+          if (fileStream) fileStream.close();
         }
       });
 
-      socket.on('error', (error) => {
-        console.error('❌ Download error:', error);
+      ws.on('error', (error) => {
+        console.error('❌ WebSocket error:', error);
         this.sendDownloadError(fileHash, error.message);
-
-        if (fileStream) {
-          fileStream.close();
-        }
+        if (fileStream) fileStream.close();
       });
 
       return { success: true, fileHash };
@@ -609,7 +615,7 @@ export class ClientCore {
       return { success: false, error: error.message };
     }
   }
-
+  
   sendDownloadError(fileHash, errorMessage) {
     this.sendToRenderer('download-error', {
       fileHash,

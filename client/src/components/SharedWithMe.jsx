@@ -15,7 +15,7 @@ export default function SharedWithMe({ onDownload }) {
         // Check if file already exists
         const exists = prev.find(f => f.fileHash === data.fileHash && f.from === data.from);
         if (exists) return prev;
-        
+
         return [...prev, {
           fileHash: data.fileHash,
           fileName: data.fileName,
@@ -35,14 +35,14 @@ export default function SharedWithMe({ onDownload }) {
   const filteredFiles = sharedFiles
     .filter(file => {
       const matchesSearch = file.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                           file.from.toLowerCase().includes(searchQuery.toLowerCase());
+        file.from.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesOwner = selectedOwner === 'all' || file.from === selectedOwner;
       return matchesSearch && matchesOwner;
     })
     .sort((a, b) => {
       let aVal = a[sortBy];
       let bVal = b[sortBy];
-      
+
       if (sortBy === 'size') {
         aVal = Number(aVal) || 0;
         bVal = Number(bVal) || 0;
@@ -53,7 +53,7 @@ export default function SharedWithMe({ onDownload }) {
         aVal = String(aVal).toLowerCase();
         bVal = String(bVal).toLowerCase();
       }
-      
+
       if (sortOrder === 'asc') {
         return aVal > bVal ? 1 : -1;
       } else {
@@ -70,8 +70,40 @@ export default function SharedWithMe({ onDownload }) {
     }
   };
 
-  const handleDownload = (file) => {
-    onDownload(file.fileHash, file.from, file.fileName);
+  const handleDownload = async (file) => {
+    try {
+      console.log('🎯 Download button clicked for:', file.fileName);
+
+      // Request download token from hub
+      const tokenResult = await window.electronAPI.requestDownloadToken(
+        file.fileHash,
+        file.from
+      );
+
+      console.log('🎫 Token result:', tokenResult);
+
+      if (tokenResult.success) {
+        const downloadResult = await window.electronAPI.startDownload({
+          fileHash: file.fileHash,
+          fileName: file.fileName,
+          uploader: file.from,
+          size: file.size,
+          token: tokenResult.token,
+          uploaderAddress: tokenResult.uploaderAddress || 'localhost',
+        });
+
+        console.log('🚀 Download started:', downloadResult);
+        if (onDownload) {
+          onDownload(file.fileHash, file.from, file.fileName);
+        }
+      } else {
+        console.error('❌ Token request failed:', tokenResult.error);
+        alert(`Failed to get download token: ${tokenResult.error}`);
+      }
+    } catch (error) {
+      console.error('❌ Download error:', error);
+      alert(`Download error: ${error.message}`);
+    }
   };
 
   const SortIcon = ({ field }) => {
@@ -100,7 +132,7 @@ export default function SharedWithMe({ onDownload }) {
             onChange={(e) => setSearchQuery(e.target.value)}
             className="input-field text-sm flex-1"
           />
-          
+
           <select
             value={selectedOwner}
             onChange={(e) => setSelectedOwner(e.target.value)}
@@ -156,7 +188,7 @@ export default function SharedWithMe({ onDownload }) {
             </thead>
             <tbody>
               {filteredFiles.map((file, index) => (
-                <tr 
+                <tr
                   key={`${file.fileHash}-${file.from}-${index}`}
                   className="border-b border-gray-700/50 hover:bg-gray-800/50 transition-colors"
                 >
