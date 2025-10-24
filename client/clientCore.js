@@ -542,28 +542,27 @@ export class ClientCore {
             downloadState.progress = Math.min(99, (downloadState.downloaded / size) * 100);
 
             const now = Date.now();
-            if (now - lastProgressUpdate >= 500) {
-              const timeDiff = (now - downloadState.lastUpdate) / 1000;
-              const bytesDiff = downloadState.downloaded - downloadState.lastProgressedBytes;
-              downloadState.speed = bytesDiff / timeDiff;
-              downloadState.lastUpdate = now;
-              downloadState.lastProgressedBytes = downloadState.downloaded;
-              lastProgressUpdate = now;
+            const timeDiff = (now - downloadState.lastUpdate) / 1000;
+            const bytesDiff = downloadState.downloaded - downloadState.lastProgressedBytes;
+            downloadState.speed = timeDiff > 0 ? bytesDiff / timeDiff : 0;
+            downloadState.lastUpdate = now;
+            downloadState.lastProgressedBytes = downloadState.downloaded;
 
-              console.log(`📊 Progress: ${downloadState.progress.toFixed(1)}% | ${downloadState.speed.toFixed(0)} B/s`);
+            console.log(`📊 Progress: ${downloadState.progress.toFixed(1)}% | Chunk ${msg.current + 1}/${msg.total}`);
 
-              this.sendToRenderer('download-progress', {
-                fileHash,
-                fileName,
-                uploader,
-                downloaded: downloadState.downloaded,
-                total: size,
-                progress: downloadState.progress,
-                speed: downloadState.speed,
-                status: 'downloading',
-                chunksReceived: downloadState.chunksReceived,
-              });
-            }
+            // Send progress for EVERY chunk (no throttle)
+            this.sendToRenderer('download-progress', {
+              fileHash,
+              fileName,
+              uploader,
+              downloaded: downloadState.downloaded,
+              total: size,
+              progress: downloadState.progress,
+              speed: downloadState.speed,
+              status: 'downloading',
+              chunksReceived: downloadState.chunksReceived,
+              totalChunks: msg.total
+            });
           }
           else if (msg.type === 'fileComplete') {
             console.log('📥 Download completed');
@@ -615,7 +614,7 @@ export class ClientCore {
       return { success: false, error: error.message };
     }
   }
-  
+
   sendDownloadError(fileHash, errorMessage) {
     this.sendToRenderer('download-error', {
       fileHash,
