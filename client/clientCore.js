@@ -203,6 +203,8 @@ export class ClientCore {
           });
           break;
 
+        // In clientCore.js, replace the 'fileShared' case in handleMessage():
+
         case 'fileShared':
           console.log('📥 Received file share:', msg.fileName, 'from', msg.from);
           console.log('📦 Full message:', JSON.stringify(msg, null, 2));
@@ -214,15 +216,21 @@ export class ClientCore {
             size: msg.size,
             uploader: msg.from,
             encryptedKey: msg.encryptedKey,
+            iv: msg.iv,
             sharedAt: Date.now(),
           };
 
-          // Avoid duplicates
-          const exists = this.sharedWithMe.find(f =>
+          // Avoid duplicates - but UPDATE if exists (to get latest IV and key)
+          const existingIndex = this.sharedWithMe.findIndex(f =>
             f.fileHash === msg.fileHash && f.uploader === msg.from
           );
 
-          if (!exists) {
+          if (existingIndex >= 0) {
+            // Update existing entry with new encryption data
+            this.sharedWithMe[existingIndex] = sharedFile;
+            console.log('🔄 Updated existing file share with new encryption data');
+          } else {
+            // Add new file share
             this.sharedWithMe.push(sharedFile);
             console.log('✅ File added to sharedWithMe:', sharedFile);
           }
@@ -572,44 +580,65 @@ export class ClientCore {
                 try {
                   // DECRYPT THE FILE
                   const encryptedPath = outputPath;
-                  const decryptedPath = outputPath.replace('.pdf', '_decrypted.pdf'); // Temp name
+                  const decryptedPath = outputPath.replace('.pdf', '_decrypted.pdf');
 
-                  // Get decryption key
+                  // Get decryption key - IMPORTANT: Get the LATEST entry
                   const fileInfo = this.sharedWithMe.find(f => f.fileHash === fileHash);
-                  if (!fileInfo || !fileInfo.encryptedKey) {
+                  if (!fileInfo) {
+                    throw new Error('File info not found in sharedWithMe');
+                  }
+
+                  if (!fileInfo.encryptedKey) {
                     throw new Error('No encryption key found');
                   }
 
+                  if (!fileInfo.iv) {
+                    throw new Error('No IV found');
+                  }
+
+                  console.log('🔍 File info:', {
+                    hasKey: !!fileInfo.encryptedKey,
+                    hasIV: !!fileInfo.iv,
+                    uploader: fileInfo.uploader
+                  });
+
                   // Decrypt the AES key using our private key
                   const { privateKey } = ensureKeyPair();
-                  const crypto = await import('crypto');
 
                   const decryptedAESKey = crypto.privateDecrypt(
                     {
                       key: privateKey,
-                      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING
+                      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+                      oaepHash: "sha256"
                     },
                     Buffer.from(fileInfo.encryptedKey, 'base64')
                   );
 
+                  console.log('✅ AES key decrypted successfully');
+
                   const iv = Buffer.from(fileInfo.iv, 'base64');
+                  console.log('✅ IV loaded successfully');
 
                   // Decrypt the file
                   const decipher = crypto.createDecipheriv('aes-256-cbc', decryptedAESKey, iv);
                   const encryptedData = fs.readFileSync(encryptedPath);
+                  console.log(`📦 Read ${encryptedData.length} bytes of encrypted data`);
+
                   const decryptedData = Buffer.concat([
                     decipher.update(encryptedData),
                     decipher.final()
                   ]);
+                  console.log(`✅ Decrypted ${decryptedData.length} bytes`);
 
                   // Write decrypted file
                   fs.writeFileSync(decryptedPath, decryptedData);
+                  console.log(`💾 Wrote decrypted file: ${decryptedPath}`);
 
                   // Delete encrypted file and rename decrypted
                   fs.unlinkSync(encryptedPath);
                   fs.renameSync(decryptedPath, outputPath);
 
-                  console.log('✅ File decrypted successfully');
+                  console.log('✅ File decrypted and saved successfully to:', outputPath);
 
                   downloadState.status = 'completed';
                   downloadState.progress = 100;

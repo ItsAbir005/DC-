@@ -1,26 +1,4 @@
 "use strict";
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
 const electron = require("electron");
 const path = require("path");
 const require$$7 = require("url");
@@ -3704,7 +3682,7 @@ var hasRequiredSafeBuffer;
 function requireSafeBuffer() {
   if (hasRequiredSafeBuffer) return safeBuffer.exports;
   hasRequiredSafeBuffer = 1;
-  (function(module2, exports) {
+  (function(module, exports) {
     var buffer = require$$0$1;
     var Buffer2 = buffer.Buffer;
     function copyProps(src, dst) {
@@ -3713,7 +3691,7 @@ function requireSafeBuffer() {
       }
     }
     if (Buffer2.from && Buffer2.alloc && Buffer2.allocUnsafe && Buffer2.allocUnsafeSlow) {
-      module2.exports = buffer;
+      module.exports = buffer;
     } else {
       copyProps(buffer, exports);
       exports.Buffer = SafeBuffer;
@@ -4726,14 +4704,14 @@ var hasRequiredRe;
 function requireRe() {
   if (hasRequiredRe) return re.exports;
   hasRequiredRe = 1;
-  (function(module2, exports) {
+  (function(module, exports) {
     const {
       MAX_SAFE_COMPONENT_LENGTH,
       MAX_SAFE_BUILD_LENGTH,
       MAX_LENGTH
     } = requireConstants();
     const debug = requireDebug();
-    exports = module2.exports = {};
+    exports = module.exports = {};
     const re2 = exports.re = [];
     const safeRe = exports.safeRe = [];
     const src = exports.src = [];
@@ -8064,6 +8042,7 @@ class ClientCore {
             }
           });
           break;
+        // In clientCore.js, replace the 'fileShared' case in handleMessage():
         case "fileShared":
           console.log("📥 Received file share:", msg.fileName, "from", msg.from);
           console.log("📦 Full message:", JSON.stringify(msg, null, 2));
@@ -8073,12 +8052,16 @@ class ClientCore {
             size: msg.size,
             uploader: msg.from,
             encryptedKey: msg.encryptedKey,
+            iv: msg.iv,
             sharedAt: Date.now()
           };
-          const exists = this.sharedWithMe.find(
+          const existingIndex = this.sharedWithMe.findIndex(
             (f) => f.fileHash === msg.fileHash && f.uploader === msg.from
           );
-          if (!exists) {
+          if (existingIndex >= 0) {
+            this.sharedWithMe[existingIndex] = sharedFile;
+            console.log("🔄 Updated existing file share with new encryption data");
+          } else {
             this.sharedWithMe.push(sharedFile);
             console.log("✅ File added to sharedWithMe:", sharedFile);
           }
@@ -8367,29 +8350,45 @@ class ClientCore {
                   const encryptedPath = outputPath;
                   const decryptedPath = outputPath.replace(".pdf", "_decrypted.pdf");
                   const fileInfo2 = this.sharedWithMe.find((f) => f.fileHash === fileHash);
-                  if (!fileInfo2 || !fileInfo2.encryptedKey) {
+                  if (!fileInfo2) {
+                    throw new Error("File info not found in sharedWithMe");
+                  }
+                  if (!fileInfo2.encryptedKey) {
                     throw new Error("No encryption key found");
                   }
+                  if (!fileInfo2.iv) {
+                    throw new Error("No IV found");
+                  }
+                  console.log("🔍 File info:", {
+                    hasKey: !!fileInfo2.encryptedKey,
+                    hasIV: !!fileInfo2.iv,
+                    uploader: fileInfo2.uploader
+                  });
                   const { privateKey } = ensureKeyPair();
-                  const crypto2 = await import("crypto");
-                  const decryptedAESKey = crypto2.privateDecrypt(
+                  const decryptedAESKey = crypto.privateDecrypt(
                     {
                       key: privateKey,
-                      padding: crypto2.constants.RSA_PKCS1_OAEP_PADDING
+                      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+                      oaepHash: "sha256"
                     },
                     Buffer.from(fileInfo2.encryptedKey, "base64")
                   );
+                  console.log("✅ AES key decrypted successfully");
                   const iv = Buffer.from(fileInfo2.iv, "base64");
-                  const decipher = crypto2.createDecipheriv("aes-256-cbc", decryptedAESKey, iv);
+                  console.log("✅ IV loaded successfully");
+                  const decipher = crypto.createDecipheriv("aes-256-cbc", decryptedAESKey, iv);
                   const encryptedData = fs.readFileSync(encryptedPath);
+                  console.log(`📦 Read ${encryptedData.length} bytes of encrypted data`);
                   const decryptedData = Buffer.concat([
                     decipher.update(encryptedData),
                     decipher.final()
                   ]);
+                  console.log(`✅ Decrypted ${decryptedData.length} bytes`);
                   fs.writeFileSync(decryptedPath, decryptedData);
+                  console.log(`💾 Wrote decrypted file: ${decryptedPath}`);
                   fs.unlinkSync(encryptedPath);
                   fs.renameSync(decryptedPath, outputPath);
-                  console.log("✅ File decrypted successfully");
+                  console.log("✅ File decrypted and saved successfully to:", outputPath);
                   downloadState.status = "completed";
                   downloadState.progress = 100;
                   this.sendToRenderer("download-complete", {
