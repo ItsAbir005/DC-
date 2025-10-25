@@ -6,6 +6,7 @@ import SharedWithMe from './SharedWithMe';
 import ShareModal from './ShareModal';
 import DownloadManager from './DownloadManager';
 import DebugPanel from './DebugPanel';
+import ChatPanel from './ChatPanel';
 
 export default function MainLayout({ nickname }) {
   const [users, setUsers] = useState([]);
@@ -29,7 +30,7 @@ export default function MainLayout({ nickname }) {
   const loadInitialData = async () => {
     const fileList = await window.electronAPI.getFiles();
     setFiles(fileList || []);
-    
+
     const userList = await window.electronAPI.getUsers();
     setUsers(userList || []);
   };
@@ -148,7 +149,7 @@ export default function MainLayout({ nickname }) {
               </p>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 rounded-lg border border-emerald-500/30">
               <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
@@ -166,31 +167,28 @@ export default function MainLayout({ nickname }) {
         <div className="flex gap-1">
           <button
             onClick={() => setActiveTab('shared-by-me')}
-            className={`px-6 py-3 font-medium transition-all ${
-              activeTab === 'shared-by-me'
+            className={`px-6 py-3 font-medium transition-all ${activeTab === 'shared-by-me'
                 ? 'text-white border-b-2 border-indigo-500'
                 : 'text-gray-400 hover:text-white'
-            }`}
+              }`}
           >
             📤 Shared By Me {files.length > 0 && `(${files.length})`}
           </button>
           <button
             onClick={() => setActiveTab('shared-with-me')}
-            className={`px-6 py-3 font-medium transition-all ${
-              activeTab === 'shared-with-me'
+            className={`px-6 py-3 font-medium transition-all ${activeTab === 'shared-with-me'
                 ? 'text-white border-b-2 border-indigo-500'
                 : 'text-gray-400 hover:text-white'
-            }`}
+              }`}
           >
             📥 Shared With Me
           </button>
           <button
             onClick={() => setActiveTab('downloads')}
-            className={`px-6 py-3 font-medium transition-all ${
-              activeTab === 'downloads'
+            className={`px-6 py-3 font-medium transition-all ${activeTab === 'downloads'
                 ? 'text-white border-b-2 border-indigo-500'
                 : 'text-gray-400 hover:text-white'
-            }`}
+              }`}
           >
             ⬇️ Downloads
           </button>
@@ -202,16 +200,16 @@ export default function MainLayout({ nickname }) {
         {/* Files Panel */}
         <div className="lg:col-span-2 h-[calc(100vh-200px)]">
           {activeTab === 'shared-by-me' && (
-            <SharedByMe 
-              files={files} 
+            <SharedByMe
+              files={files}
               onShare={handleShare}
               onRevoke={handleRevoke}
               onOpenShareModal={setShareModalFile}
             />
           )}
-          
+
           {activeTab === 'shared-with-me' && (
-            <SharedWithMe 
+            <SharedWithMe
               onDownload={handleDownload}
             />
           )}
@@ -227,21 +225,24 @@ export default function MainLayout({ nickname }) {
           <div className="h-1/2">
             <OnlineUsers users={users} />
           </div>
+          {/* Chat */}
+          <div className="h-1/2">
+            <ChatPanel nickname={nickname} users={users} />
+          </div>
 
           {/* Activity Log */}
           <div className="panel h-1/2">
             <h2 className="text-lg font-bold text-white mb-4">💬 Activity Log</h2>
-            
+
             <div className="space-y-2 overflow-y-auto h-[calc(100%-40px)]">
               {messages.slice(-10).reverse().map((msg, index) => (
                 <div
                   key={index}
-                  className={`p-3 rounded-lg border text-sm animate-slide-in ${
-                    msg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' :
-                    msg.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-300' :
-                    msg.type === 'warning' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
-                    'bg-blue-500/10 border-blue-500/30 text-blue-300'
-                  }`}
+                  className={`p-3 rounded-lg border text-sm animate-slide-in ${msg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' :
+                      msg.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-300' :
+                        msg.type === 'warning' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                          'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                    }`}
                 >
                   <p className="break-words leading-relaxed">{msg.text}</p>
                   {msg.timestamp && (
@@ -251,7 +252,7 @@ export default function MainLayout({ nickname }) {
                   )}
                 </div>
               ))}
-              
+
               {messages.length === 0 && (
                 <p className="text-gray-500 text-center py-8">No activity yet</p>
               )}

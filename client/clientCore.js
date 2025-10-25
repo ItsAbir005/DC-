@@ -572,6 +572,9 @@ export class ClientCore {
               totalChunks: msg.total
             });
           }
+
+          // In clientCore.js - Replace the download complete section in startDownload():
+
           else if (msg.type === 'fileComplete') {
             console.log('📥 Download completed - starting decryption...');
 
@@ -596,7 +599,7 @@ export class ClientCore {
                     throw new Error('No IV found');
                   }
 
-                  console.log('🔍 File info:', {
+                  console.log('🔐 File info:', {
                     hasKey: !!fileInfo.encryptedKey,
                     hasIV: !!fileInfo.iv,
                     uploader: fileInfo.uploader
@@ -640,13 +643,18 @@ export class ClientCore {
 
                   console.log('✅ File decrypted and saved successfully to:', outputPath);
 
+                  // 🆕 Get ABSOLUTE path for opening the file
+                  const absolutePath = path.resolve(outputPath);
+                  console.log('📍 Absolute path:', absolutePath);
+
                   downloadState.status = 'completed';
                   downloadState.progress = 100;
 
+                  // 🆕 Send ABSOLUTE path to renderer so file can be opened
                   this.sendToRenderer('download-complete', {
                     fileHash,
                     fileName,
-                    outputPath,
+                    outputPath: absolutePath, // ✅ Use absolute path instead of relative
                   });
 
                   this.activeDownloads.delete(fileHash);
@@ -659,6 +667,7 @@ export class ClientCore {
               });
             }
           }
+
           else if (msg.type === 'error') {
             console.error('❌ Server error:', msg.text);
             this.sendDownloadError(fileHash, msg.text);

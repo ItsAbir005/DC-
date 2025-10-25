@@ -44,6 +44,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDownload: (fileHash) =>
     ipcRenderer.invoke('client:cancelDownload', { fileHash }),
 
+  // 🆕 File system operations - Open downloaded files
+  openFile: (filePath) =>
+    ipcRenderer.invoke('client:openFile', filePath),
+
+  showFileInFolder: (filePath) =>
+    ipcRenderer.invoke('client:showFileInFolder', filePath),
+
   // Event listeners
   onMessage: (callback) => {
     ipcRenderer.on('hub-message', (_, data) => callback(data));
@@ -88,6 +95,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFileListUpdate: (callback) => {
     ipcRenderer.on('file-list-update', (_, data) => callback(data));
   },
+  
+  sendMessage: (message) =>
+    ipcRenderer.invoke('client:sendMessage', message),
 
   onAccessRevoked: (callback) => {
     ipcRenderer.on('access-revoked', (_, data) => callback(data));

@@ -8359,7 +8359,7 @@ class ClientCore {
                   if (!fileInfo2.iv) {
                     throw new Error("No IV found");
                   }
-                  console.log("🔍 File info:", {
+                  console.log("🔐 File info:", {
                     hasKey: !!fileInfo2.encryptedKey,
                     hasIV: !!fileInfo2.iv,
                     uploader: fileInfo2.uploader
@@ -8389,12 +8389,15 @@ class ClientCore {
                   fs.unlinkSync(encryptedPath);
                   fs.renameSync(decryptedPath, outputPath);
                   console.log("✅ File decrypted and saved successfully to:", outputPath);
+                  const absolutePath = path.resolve(outputPath);
+                  console.log("📍 Absolute path:", absolutePath);
                   downloadState.status = "completed";
                   downloadState.progress = 100;
                   this.sendToRenderer("download-complete", {
                     fileHash,
                     fileName,
-                    outputPath
+                    outputPath: absolutePath
+                    // ✅ Use absolute path instead of relative
                   });
                   this.activeDownloads.delete(fileHash);
                   ws.close();
@@ -8596,6 +8599,42 @@ electron.ipcMain.handle("client:resumeDownload", async (event, { fileHash }) => 
 electron.ipcMain.handle("client:cancelDownload", async (event, { fileHash }) => {
   try {
     return await clientCore.cancelDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:openFile", async (event, filePath) => {
+  try {
+    console.log("📂 Opening file:", filePath);
+    const result = await electron.shell.openPath(filePath);
+    if (result) {
+      console.error("❌ Failed to open file:", result);
+      return { success: false, error: result };
+    }
+    console.log("✅ File opened successfully");
+    return { success: true };
+  } catch (error) {
+    console.error("❌ Error opening file:", error);
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:showFileInFolder", async (event, filePath) => {
+  try {
+    console.log("📁 Showing file in folder:", filePath);
+    electron.shell.showItemInFolder(filePath);
+    return { success: true };
+  } catch (error) {
+    console.error("❌ Error showing file:", error);
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("client:sendMessage", async (event, message) => {
+  try {
+    if (clientCore && clientCore.ws && clientCore.ws.readyState === 1) {
+      clientCore.ws.send(JSON.stringify(message));
+      return { success: true };
+    }
+    return { success: false, error: "Not connected" };
   } catch (error) {
     return { success: false, error: error.message };
   }

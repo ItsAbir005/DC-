@@ -1,5 +1,5 @@
 // client/electron/main.js
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ClientCore } from '../clientCore.js';
@@ -129,6 +129,47 @@ ipcMain.handle('client:resumeDownload', async (event, { fileHash }) => {
 ipcMain.handle('client:cancelDownload', async (event, { fileHash }) => {
   try {
     return await clientCore.cancelDownload(fileHash);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// 🆕 File System Handlers - Open downloaded files
+ipcMain.handle('client:openFile', async (event, filePath) => {
+  try {
+    console.log('📂 Opening file:', filePath);
+    const result = await shell.openPath(filePath);
+    if (result) {
+      // If result is not empty, it contains an error message
+      console.error('❌ Failed to open file:', result);
+      return { success: false, error: result };
+    }
+    console.log('✅ File opened successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error opening file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:showFileInFolder', async (event, filePath) => {
+  try {
+    console.log('📁 Showing file in folder:', filePath);
+    shell.showItemInFolder(filePath);
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error showing file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('client:sendMessage', async (event, message) => {
+  try {
+    if (clientCore && clientCore.ws && clientCore.ws.readyState === 1) {
+      clientCore.ws.send(JSON.stringify(message));
+      return { success: true };
+    }
+    return { success: false, error: 'Not connected' };
   } catch (error) {
     return { success: false, error: error.message };
   }
