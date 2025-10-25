@@ -327,6 +327,47 @@ wss.on("connection", async (ws, req) => {
         }));
         return;
       }
+      // hub/hub.js - In the ws.on("message") function, add these:
+
+      // Public chat
+      if (msg.type === "message" && msg.text) {
+        broadcast(
+          connectedUsers,
+          JSON.stringify({ type: "chat", from: currentUser, text: msg.text })
+        );
+        return;
+      }
+
+      // Private chat
+      if (msg.type === "privateMessage") {
+        const recipientWs = connectedUsers.get(msg.to);
+        if (recipientWs && recipientWs.readyState === 1) {
+          recipientWs.send(JSON.stringify({
+            type: "privateMessage",
+            from: currentUser,
+            to: msg.to,
+            text: msg.text
+          }));
+        }
+        return;
+      }
+
+      // Typing indicator
+      if (msg.type === "typing") {
+        if (msg.to && msg.to !== 'all') {
+          const recipientWs = connectedUsers.get(msg.to);
+          if (recipientWs) {
+            recipientWs.send(JSON.stringify({ type: "typing", from: currentUser }));
+          }
+        } else {
+          for (const [nick, userWs] of connectedUsers.entries()) {
+            if (nick !== currentUser && userWs.readyState === 1) {
+              userWs.send(JSON.stringify({ type: "typing", from: currentUser }));
+            }
+          }
+        }
+        return;
+      }
 
       // Handle audit log requests
       if (msg.type === "get_audit_log") {
