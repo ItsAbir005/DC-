@@ -7,10 +7,15 @@ export default function SharedWithMe({ onDownload }) {
   const [sortBy, setSortBy] = useState('fileName');
   const [sortOrder, setSortOrder] = useState('asc');
   const [selectedOwner, setSelectedOwner] = useState('all');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Listen for shared files
+    // Load existing shared files on mount
+    loadSharedFiles();
+
+    // Listen for NEW files being shared
     window.electronAPI.onFileShared((data) => {
+      console.log('📥 New file shared event:', data);
       setSharedFiles(prev => {
         // Check if file already exists
         const exists = prev.find(f => f.fileHash === data.fileHash && f.from === data.from);
@@ -25,7 +30,43 @@ export default function SharedWithMe({ onDownload }) {
         }];
       });
     });
+
+    // Listen for access revoked
+    if (window.electronAPI.onAccessRevoked) {
+      window.electronAPI.onAccessRevoked((data) => {
+        console.log('🚫 Access revoked:', data);
+        setSharedFiles(prev => prev.filter(f => 
+          !(f.fileHash === data.fileHash && f.from === data.from)
+        ));
+      });
+    }
   }, []);
+
+  const loadSharedFiles = async () => {
+    try {
+      setLoading(true);
+      console.log('📋 Loading shared files from backend...');
+      
+      const files = await window.electronAPI.getSharedWithMe();
+      console.log('✅ Loaded shared files:', files);
+      
+      // Transform the data to match our component's format
+      const transformedFiles = (files || []).map(file => ({
+        fileHash: file.fileHash,
+        fileName: file.fileName,
+        size: file.size,
+        from: file.uploader,
+        timestamp: file.sharedAt ? new Date(file.sharedAt) : new Date(),
+      }));
+      
+      setSharedFiles(transformedFiles);
+    } catch (error) {
+      console.error('❌ Error loading shared files:', error);
+      setSharedFiles([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getUniqueOwners = () => {
     const owners = new Set(sharedFiles.map(f => f.from));
@@ -111,40 +152,62 @@ export default function SharedWithMe({ onDownload }) {
     return <span className="text-indigo-400">{sortOrder === 'asc' ? '↑' : '↓'}</span>;
   };
 
+  if (loading) {
+    return (
+      <div className="panel h-full flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading shared files...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="panel h-full flex flex-col">
       <div className="mb-4">
-        <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-          📥 Shared With Me
-          {sharedFiles.length > 0 && (
-            <span className="text-sm font-normal text-gray-400 bg-gray-800 px-2 py-1 rounded">
-              {filteredFiles.length} of {sharedFiles.length}
-            </span>
-          )}
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            📥 Shared With Me
+            {sharedFiles.length > 0 && (
+              <span className="text-sm font-normal text-gray-400 bg-gray-800 px-2 py-1 rounded">
+                {filteredFiles.length} of {sharedFiles.length}
+              </span>
+            )}
+          </h2>
+          
+          <button
+            onClick={loadSharedFiles}
+            className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
+          >
+            🔄 Refresh
+          </button>
+        </div>
 
         {/* Filters */}
-        <div className="flex gap-2 mb-3">
-          <input
-            type="text"
-            placeholder="🔍 Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="input-field text-sm flex-1"
-          />
+        {sharedFiles.length > 0 && (
+          <div className="flex gap-2 mb-3">
+            <input
+              type="text"
+              placeholder="🔍 Search files..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="input-field text-sm flex-1"
+            />
 
-          <select
-            value={selectedOwner}
-            onChange={(e) => setSelectedOwner(e.target.value)}
-            className="input-field text-sm w-40"
-          >
-            {getUniqueOwners().map(owner => (
-              <option key={owner} value={owner}>
-                {owner === 'all' ? 'All Owners' : owner}
-              </option>
-            ))}
-          </select>
-        </div>
+            <select
+              value={selectedOwner}
+              onChange={(e) => setSelectedOwner(e.target.value)}
+              className="input-field text-sm w-40"
+            >
+              {getUniqueOwners().map(owner => (
+                <option key={owner} value={owner}>
+                  {owner === 'all' ? 'All Owners' : owner}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {sharedFiles.length === 0 ? (
