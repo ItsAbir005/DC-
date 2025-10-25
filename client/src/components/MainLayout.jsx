@@ -168,8 +168,8 @@ export default function MainLayout({ nickname }) {
           <button
             onClick={() => setActiveTab('shared-by-me')}
             className={`px-6 py-3 font-medium transition-all ${activeTab === 'shared-by-me'
-                ? 'text-white border-b-2 border-indigo-500'
-                : 'text-gray-400 hover:text-white'
+              ? 'text-white border-b-2 border-indigo-500'
+              : 'text-gray-400 hover:text-white'
               }`}
           >
             📤 Shared By Me {files.length > 0 && `(${files.length})`}
@@ -177,8 +177,8 @@ export default function MainLayout({ nickname }) {
           <button
             onClick={() => setActiveTab('shared-with-me')}
             className={`px-6 py-3 font-medium transition-all ${activeTab === 'shared-with-me'
-                ? 'text-white border-b-2 border-indigo-500'
-                : 'text-gray-400 hover:text-white'
+              ? 'text-white border-b-2 border-indigo-500'
+              : 'text-gray-400 hover:text-white'
               }`}
           >
             📥 Shared With Me
@@ -186,8 +186,8 @@ export default function MainLayout({ nickname }) {
           <button
             onClick={() => setActiveTab('downloads')}
             className={`px-6 py-3 font-medium transition-all ${activeTab === 'downloads'
-                ? 'text-white border-b-2 border-indigo-500'
-                : 'text-gray-400 hover:text-white'
+              ? 'text-white border-b-2 border-indigo-500'
+              : 'text-gray-400 hover:text-white'
               }`}
           >
             ⬇️ Downloads
@@ -218,44 +218,46 @@ export default function MainLayout({ nickname }) {
             <DownloadManager />
           )}
         </div>
-
-        {/* Right Sidebar */}
-        <div className="space-y-4 h-[calc(100vh-200px)]">
-          {/* Users */}
-          <div className="h-1/2">
+        {/* Right Sidebar - UPDATED */}
+        <div className="space-y-4 h-[calc(100vh-200px)] overflow-y-auto">
+          {/* Users - 1/3 height */}
+          <div className="h-[30%] min-h-[200px]">
             <OnlineUsers users={users} />
           </div>
-          {/* Chat */}
-          <div className="h-1/2">
+
+          {/* Chat - 1/3 height */}
+          <div className="h-[35%] min-h-[250px]">
             <ChatPanel nickname={nickname} users={users} />
           </div>
 
-          {/* Activity Log */}
-          <div className="panel h-1/2">
-            <h2 className="text-lg font-bold text-white mb-4">💬 Activity Log</h2>
+          {/* Activity Log - 1/3 height */}
+          <div className="h-[35%] min-h-[200px]">
+            <div className="panel h-full flex flex-col">
+              <h2 className="text-lg font-bold text-white mb-4">💬 Activity Log</h2>
 
-            <div className="space-y-2 overflow-y-auto h-[calc(100%-40px)]">
-              {messages.slice(-10).reverse().map((msg, index) => (
-                <div
-                  key={index}
-                  className={`p-3 rounded-lg border text-sm animate-slide-in ${msg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' :
-                      msg.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-300' :
-                        msg.type === 'warning' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
-                          'bg-blue-500/10 border-blue-500/30 text-blue-300'
-                    }`}
-                >
-                  <p className="break-words leading-relaxed">{msg.text}</p>
-                  {msg.timestamp && (
-                    <p className="text-xs opacity-60 mt-1">
-                      {msg.timestamp.toLocaleTimeString()}
-                    </p>
-                  )}
-                </div>
-              ))}
+              <div className="flex-1 overflow-y-auto space-y-2">
+                {messages.slice(-10).reverse().map((msg, index) => (
+                  <div
+                    key={index}
+                    className={`p-3 rounded-lg border text-sm ${msg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' :
+                        msg.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-300' :
+                          msg.type === 'warning' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                            'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                      }`}
+                  >
+                    <p className="break-words leading-relaxed">{msg.text}</p>
+                    {msg.timestamp && (
+                      <p className="text-xs opacity-60 mt-1">
+                        {msg.timestamp.toLocaleTimeString()}
+                      </p>
+                    )}
+                  </div>
+                ))}
 
-              {messages.length === 0 && (
-                <p className="text-gray-500 text-center py-8">No activity yet</p>
-              )}
+                {messages.length === 0 && (
+                  <p className="text-gray-500 text-center py-8">No activity yet</p>
+                )}
+              </div>
             </div>
           </div>
         </div>
